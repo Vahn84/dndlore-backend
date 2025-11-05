@@ -109,6 +109,10 @@ jobs:
             echo "Deployed containers:" && docker ps --filter name=dndlore-backend --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
             echo "Backend local health check on port $PORT:" \
               && (curl -sS -o /dev/null -w 'HTTP %{http_code}\n' "http://127.0.0.1:$PORT/health" || true)
+
+            # Show host and container egress IPs to whitelist in Atlas
+            echo "Host egress IP (use this in Atlas IP Access List):" && (curl -s https://api.ipify.org || wget -qO- https://api.ipify.org || true) && echo
+            echo "Container egress IP (may match host):" && docker exec dndlore-backend sh -lc 'wget -qO- https://api.ipify.org 2>/dev/null || curl -s https://api.ipify.org 2>/dev/null || echo "(curl/wget unavailable)"' || true
             
             # Clean up old images
             docker image prune -af

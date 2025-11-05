@@ -4,6 +4,9 @@ FROM node:18-alpine
 # Create app directory
 WORKDIR /app
 
+# Ensure TLS root certificates are available for outbound HTTPS/TLS (MongoDB Atlas)
+RUN apk add --no-cache ca-certificates && update-ca-certificates
+
 # Copy package files
 COPY package*.json ./
 
