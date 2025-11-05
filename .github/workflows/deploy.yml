@@ -75,18 +75,27 @@ jobs:
             # Pull latest backend image
             docker pull ghcr.io/${{ env.OWNER_LC }}/dndlore-backend:latest
             
-            # Stop and remove old backend container
-            docker stop dndlore-backend || true
-            docker rm dndlore-backend || true
+            # Stop and remove old backend container if it exists (avoid noisy errors)
+            CID=$(docker ps -aq -f name=^dndlore-backend$)
+            if [ -n "$CID" ]; then
+              docker stop dndlore-backend
+              docker rm dndlore-backend
+            else
+              echo "No existing dndlore-backend container to stop/remove"
+            fi
             
+            # Determine backend port (default to 10101 if not set)
+            PORT="${{ secrets.BACKEND_PORT }}"
+            if [ -z "$PORT" ]; then PORT=10101; echo "BACKEND_PORT not set; defaulting to $PORT"; else echo "Using BACKEND_PORT=$PORT"; fi
+
             # Start new backend container (force reliable DNS for SRV lookups like mongodb+srv)
             docker run -d \
               --name dndlore-backend \
               --restart unless-stopped \
               --dns 1.1.1.1 --dns 8.8.8.8 \
-              -p ${{ secrets.BACKEND_PORT }}:${{ secrets.BACKEND_PORT }} \
+              -p "$PORT":"$PORT" \
               -e NODE_ENV=production \
-              -e PORT=${{ secrets.BACKEND_PORT }} \
+              -e PORT="$PORT" \
               -e FRONTEND_ORIGIN=${{ secrets.FRONTEND_ORIGIN }} \
               -e MONGO_URI=${{ secrets.MONGO_URI }} \
               -e SESSION_SECRET=${{ secrets.SESSION_SECRET }} \
@@ -103,8 +112,8 @@ jobs:
 
             # Quick post-deploy checks
             echo "Deployed containers:" && docker ps --filter name=dndlore-backend --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
-            echo "Backend local health check on port ${{ secrets.BACKEND_PORT }}:" \
-              && (curl -sS -o /dev/null -w 'HTTP %{http_code}\n' "http://127.0.0.1:${{ secrets.BACKEND_PORT }}/health" || true)
+            echo "Backend local health check on port $PORT:" \
+              && (curl -sS -o /dev/null -w 'HTTP %{http_code}\n' "http://127.0.0.1:$PORT/health" || true)
             
             # Clean up old images
             docker image prune -af
