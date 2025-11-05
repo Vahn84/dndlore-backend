@@ -88,26 +88,21 @@ jobs:
             PORT="${{ secrets.BACKEND_PORT }}"
             if [ -z "$PORT" ]; then PORT=10101; echo "BACKEND_PORT not set; defaulting to $PORT"; else echo "Using BACKEND_PORT=$PORT"; fi
 
-            # Start new backend container (force reliable DNS for SRV lookups like mongodb+srv)
-            docker run -d \
-              --name dndlore-backend \
-              --restart unless-stopped \
-              --dns 1.1.1.1 --dns 8.8.8.8 \
-              -p "$PORT":"$PORT" \
-              -e NODE_ENV=production \
-              -e PORT="$PORT" \
-              -e FRONTEND_ORIGIN=${{ secrets.FRONTEND_ORIGIN }} \
-              -e MONGO_URI=${{ secrets.MONGO_URI }} \
-              -e SESSION_SECRET=${{ secrets.SESSION_SECRET }} \
-              -e JWT_SECRET=${{ secrets.JWT_SECRET }} \
-              -e GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }} \
-              -e GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }} \
-              -e GOOGLE_CALLBACK_URL=${{ secrets.GOOGLE_CALLBACK_URL }} \
-              -e DM_EMAIL=${{ secrets.DM_EMAIL }} \
-              -e OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }} \
-              -e EXTERNAL_API_KEY=${{ secrets.EXTERNAL_API_KEY }} \
-              -v "$DEPLOY_DIR/uploads":/app/uploads \
-              --network dndlore-network \
+            # Start new backend container (single line to avoid line-continuation issues)
+            docker run -d --name dndlore-backend --restart unless-stopped \
+              --dns 1.1.1.1 --dns 8.8.8.8 -p "$PORT":"$PORT" \
+              -e NODE_ENV=production -e PORT="$PORT" \
+              -e FRONTEND_ORIGIN='${{ secrets.FRONTEND_ORIGIN }}' \
+              -e MONGO_URI='${{ secrets.MONGO_URI }}' \
+              -e SESSION_SECRET='${{ secrets.SESSION_SECRET }}' \
+              -e JWT_SECRET='${{ secrets.JWT_SECRET }}' \
+              -e GOOGLE_CLIENT_ID='${{ secrets.GOOGLE_CLIENT_ID }}' \
+              -e GOOGLE_CLIENT_SECRET='${{ secrets.GOOGLE_CLIENT_SECRET }}' \
+              -e GOOGLE_CALLBACK_URL='${{ secrets.GOOGLE_CALLBACK_URL }}' \
+              -e DM_EMAIL='${{ secrets.DM_EMAIL }}' \
+              -e OPENAI_API_KEY='${{ secrets.OPENAI_API_KEY }}' \
+              -e EXTERNAL_API_KEY='${{ secrets.EXTERNAL_API_KEY }}' \
+              -v "$DEPLOY_DIR/uploads":/app/uploads --network dndlore-network \
               ghcr.io/${{ env.OWNER_LC }}/dndlore-backend:latest
 
             # Quick post-deploy checks
