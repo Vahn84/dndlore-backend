@@ -19,8 +19,8 @@ COPY . .
 # Create uploads directory
 RUN mkdir -p uploads
 
-# Expose port
-EXPOSE 3001
+# Expose port (dynamic; defaults to 10101 in production)
+EXPOSE 10101
 
 # Start the application
 CMD ["node", "index.js"]
