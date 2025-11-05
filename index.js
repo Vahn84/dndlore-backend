@@ -7,6 +7,7 @@ import passport from 'passport';
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 import jwt from 'jsonwebtoken';
 import multer from 'multer';
+import sharp from 'sharp';
 import fs from 'fs';
 import path from 'path';
 import mongoose from 'mongoose';
@@ -28,6 +29,11 @@ mongoose
 	.catch((err) => console.error('MongoDB connection error', err));
 
 const app = express();
+
+// Health check endpoint for Docker
+app.get('/health', (req, res) => {
+	res.status(200).json({ status: 'ok' });
+});
 
 // Abilita CORS
 app.use(
@@ -72,6 +78,40 @@ const GOOGLE_CALLBACK_URL =
 	`http://localhost:${PORT}/auth/google/callback`;
 console.log('GOOGLE_CLIENT_ID:', GOOGLE_CLIENT_ID);
 console.log('GOOGLE_CLIENT_SECRET:', GOOGLE_CLIENT_SECRET);
+console.log('OPENAI_API_KEY present:', !!process.env.OPENAI_API_KEY);
+
+// Helper function to refresh Google access token using refresh token
+async function refreshGoogleToken(refreshToken) {
+	try {
+		const response = await fetch('https://oauth2.googleapis.com/token', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({
+				client_id: GOOGLE_CLIENT_ID,
+				client_secret: GOOGLE_CLIENT_SECRET,
+				refresh_token: refreshToken,
+				grant_type: 'refresh_token',
+			}),
+		});
+
+		if (!response.ok) {
+			const error = await response.text();
+			console.error('Token refresh failed:', error);
+			return null;
+		}
+
+		const data = await response.json();
+		// Google returns: { access_token, expires_in (seconds), scope, token_type }
+		return {
+			accessToken: data.access_token,
+			expiresIn: data.expires_in, // seconds from now
+		};
+	} catch (err) {
+		console.error('Error refreshing Google token:', err);
+		return null;
+	}
+}
+
 if (GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET) {
 	passport.use(
 		new GoogleStrategy(
@@ -95,9 +135,18 @@ if (GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET) {
 					let user = await User.findOne({ email });
 					if (user) {
 						console.log('User found:', user);
+						// Store tokens with expiry (Google tokens typically expire in 1 hour = 3600 seconds)
+						user.googleAccessToken = accessToken;
+						user.googleRefreshToken =
+							refreshToken || user.googleRefreshToken; // Keep existing if not provided
+						user.googleTokenExpiry = new Date(
+							Date.now() + 3600 * 1000
+						); // 1 hour from now
+						await user.save();
 						return done(null, user);
 					} else {
-						return done(err, null);
+						// No local user matched this Google account
+						return done(null, false);
 					}
 				} catch (err) {
 					return done(err, null);
@@ -168,7 +217,15 @@ app.post('/login', async (req, res) => {
 // OAuth2 endpoints
 app.get(
 	'/auth/google',
-	passport.authenticate('google', { scope: ['profile', 'email'] })
+	passport.authenticate('google', {
+		scope: [
+			'profile',
+			'email',
+			'https://www.googleapis.com/auth/documents.readonly',
+		],
+		accessType: 'offline',
+		prompt: 'consent',
+	})
 );
 app.get(
 	'/auth/google/callback',
@@ -176,7 +233,12 @@ app.get(
 	(req, res) => {
 		const user = req.user;
 		const token = jwt.sign(
-			{ id: user._id, username: user.username, role: user.role },
+			{
+				id: user._id,
+				email: user.email,
+				role: user.role,
+				googleAccessToken: user.googleAccessToken,
+			},
 			JWT_SECRET,
 			{ expiresIn: '1d' }
 		);
@@ -194,6 +256,81 @@ app.get('/auth/user', (req, res) => {
 		res.json(decoded);
 	} catch (err) {
 		res.status(401).json({ error: 'Invalid token' });
+	}
+});
+
+// Check Google token status for the authenticated user
+app.get('/auth/google-token-status', requireAuth, async (req, res) => {
+	try {
+		const user = await User.findById(req.user.id);
+		if (!user) return res.status(404).json({ error: 'User not found' });
+
+		const hasRefreshToken = !!user.googleRefreshToken;
+		const hasAccessToken = !!user.googleAccessToken;
+		const isExpired = user.googleTokenExpiry
+			? user.googleTokenExpiry < new Date()
+			: true;
+
+		res.json({
+			connected: hasRefreshToken && hasAccessToken,
+			expired: isExpired,
+			tokenExpiry: user.googleTokenExpiry,
+			needsReauth: !hasRefreshToken,
+		});
+	} catch (err) {
+		console.error('Error checking Google token status:', err);
+		res.status(500).json({ error: 'Failed to check token status' });
+	}
+});
+
+// Refresh Google access token using stored refresh token
+app.post('/auth/refresh-google-token', requireAuth, async (req, res) => {
+	try {
+		const user = await User.findById(req.user.id);
+		if (!user) return res.status(404).json({ error: 'User not found' });
+
+		if (!user.googleRefreshToken) {
+			return res.status(400).json({
+				error: 'No refresh token available. Please reconnect your Google account.',
+				needsReauth: true,
+			});
+		}
+
+		const refreshed = await refreshGoogleToken(user.googleRefreshToken);
+		if (!refreshed) {
+			return res.status(500).json({
+				error: 'Failed to refresh token. Please reconnect your Google account.',
+				needsReauth: true,
+			});
+		}
+
+		// Update user with new access token and expiry
+		user.googleAccessToken = refreshed.accessToken;
+		user.googleTokenExpiry = new Date(
+			Date.now() + refreshed.expiresIn * 1000
+		);
+		await user.save();
+
+		// Generate new JWT with updated access token
+		const newJwt = jwt.sign(
+			{
+				id: user._id,
+				email: user.email,
+				role: user.role,
+				googleAccessToken: refreshed.accessToken,
+			},
+			JWT_SECRET,
+			{ expiresIn: '1d' }
+		);
+
+		res.json({
+			token: newJwt,
+			googleAccessToken: refreshed.accessToken,
+			tokenExpiry: user.googleTokenExpiry,
+		});
+	} catch (err) {
+		console.error('Error refreshing Google token:', err);
+		res.status(500).json({ error: 'Failed to refresh token' });
 	}
 });
 
@@ -336,6 +473,7 @@ app.put('/events/:id', requireDM, async (req, res) => {
 		'endDate',
 		'detailLevel',
 		'bannerUrl',
+		'bannerThumbUrl',
 		'startEraId',
 		'startYear',
 		'startMonthIndex',
@@ -346,13 +484,17 @@ app.put('/events/:id', requireDM, async (req, res) => {
 		'endDay',
 		'groupId',
 		'pageId',
-		'order',
+		'linkSync',
 		'hidden',
 		'color',
 		'icon',
 	];
 	fields.forEach((field) => {
-		if (req.body[field] !== undefined || field === 'bannerUrl') {
+		if (
+			req.body[field] !== undefined ||
+			field === 'bannerUrl' ||
+			field === 'bannerThumbUrl'
+		) {
 			update[field] = req.body[field];
 			if (field === 'bannerUrl' && !update[field]) {
 				update[field] = '';
@@ -360,6 +502,40 @@ app.put('/events/:id', requireDM, async (req, res) => {
 		}
 	});
 	console.log('Event updated:', update);
+	// If linking with sync enabled, optionally hydrate fields from page
+	try {
+		const evBefore = await Event.findById(id);
+		const pageId =
+			update.pageId !== undefined ? update.pageId : evBefore?.pageId;
+		const linkSync =
+			update.linkSync !== undefined
+				? update.linkSync
+				: evBefore?.linkSync;
+		if (pageId && linkSync) {
+			const page = await Page.findById(pageId);
+			if (page) {
+				// Sync all three fields: title, banner, and world date
+				if (page.title) update.title = page.title;
+				update.bannerUrl = page.bannerUrl || '';
+				update.bannerThumbUrl = page.bannerThumbUrl || '';
+				const wd = page.worldDate;
+				if (wd) {
+					update.startEraId = wd.eraId ?? null;
+					update.startYear =
+						typeof wd.year === 'number' ? wd.year : null;
+					update.startMonthIndex =
+						typeof wd.monthIndex === 'number'
+							? wd.monthIndex
+							: null;
+					update.startDay =
+						typeof wd.day === 'number' ? wd.day : null;
+				}
+			}
+		}
+	} catch (e) {
+		console.warn('Link/sync hydration failed:', e);
+	}
+
 	const event = await Event.findByIdAndUpdate(id, update, { new: true });
 	if (!event) return res.status(404).json({ error: 'Event not found' });
 	res.json(event);
@@ -377,12 +553,16 @@ app.delete('/events/:id', requireDM, async (req, res) => {
 // Pagine
 // -----------------------------------------------------------------------------
 app.get('/pages', async (req, res) => {
-	const { type } = req.query;
+	const { type, q, limit } = req.query;
 	const query = {};
 	if (type) {
 		query.type = type;
 	}
-	const pages = await Page.find(query);
+	if (q && typeof q === 'string' && q.trim()) {
+		query.title = { $regex: q.trim(), $options: 'i' };
+	}
+	const lim = Math.min(100, Math.max(1, Number(limit) || 50));
+	const pages = await Page.find(query).limit(lim).sort({ updatedAt: -1 });
 	res.json(pages);
 });
 
@@ -397,20 +577,23 @@ app.post('/pages', requireDM, async (req, res) => {
 		title,
 		type,
 		bannerUrl,
-		content = [],
+		blocks = [],
+		sessionDate,
+		worldDate,
 		hidden = false,
-		hiddenSections = [],
 		draft = false,
 	} = req.body;
 	if (!title) return res.status(400).json({ error: 'title is required' });
 	if (!type) return res.status(400).json({ error: 'type is required' });
 	const page = await Page.create({
 		title,
+		subtitle: '',
 		type,
 		bannerUrl,
-		content,
+		blocks,
+		sessionDate,
+		worldDate,
 		hidden,
-		hiddenSections,
 		draft,
 	});
 	res.json(page);
@@ -421,18 +604,102 @@ app.put('/pages/:id', requireDM, async (req, res) => {
 	const update = {};
 	const fields = [
 		'title',
+		'subtitle',
 		'type',
 		'bannerUrl',
-		'content',
+		'blocks',
+		'sessionDate',
+		'worldDate',
 		'hidden',
-		'hiddenSections',
 		'draft',
 	];
 	fields.forEach((field) => {
 		if (req.body[field] !== undefined) update[field] = req.body[field];
 	});
+	console.log('Page updated:', update);
 	const page = await Page.findByIdAndUpdate(id, update, { new: true });
 	if (!page) return res.status(404).json({ error: 'Page not found' });
+
+	// After updating a page, propagate to linked events that opt into syncing
+	try {
+		const linkedEvents = await Event.find({ pageId: id });
+		for (const ev of linkedEvents) {
+			if (!ev.linkSync) continue; // Skip if sync is disabled
+
+			let changed = false;
+			// Sync title
+			if (page.title && ev.title !== page.title) {
+				ev.title = page.title;
+				changed = true;
+			}
+			// Sync banner
+			const pb = page.bannerUrl || '';
+			const pbt = page.bannerThumbUrl || '';
+			if ((ev.bannerUrl || '') !== pb) {
+				ev.bannerUrl = pb;
+				changed = true;
+			}
+			if ((ev.bannerThumbUrl || '') !== pbt) {
+				ev.bannerThumbUrl = pbt;
+				changed = true;
+			}
+			// Sync world date
+			if (page.worldDate && page.worldDate.eraId) {
+				const wd = page.worldDate;
+				// Copy structured world date into event start fields
+				const nextEra = wd.eraId || null;
+				const nextYear = typeof wd.year === 'number' ? wd.year : null;
+				const nextMonth =
+					typeof wd.monthIndex === 'number' ? wd.monthIndex : null;
+				const nextDay = typeof wd.day === 'number' ? wd.day : null;
+				if (
+					ev.startEraId !== nextEra ||
+					ev.startYear !== nextYear ||
+					ev.startMonthIndex !== nextMonth ||
+					ev.startDay !== nextDay
+				) {
+					ev.startEraId = nextEra;
+					ev.startYear = nextYear;
+					ev.startMonthIndex = nextMonth;
+					ev.startDay = nextDay;
+					// Clear endDate fields for single-day events
+					ev.endEraId = null;
+					ev.endYear = null;
+					ev.endMonthIndex = null;
+					ev.endDay = null;
+					ev.endDate = '';
+					// Do not force a formatted startDate string; UI derives it
+					changed = true;
+				}
+			} else if (
+				page.worldDate === null ||
+				(page.worldDate && !page.worldDate.eraId)
+			) {
+				// Clear world date if page worldDate is null or empty
+				if (
+					ev.startEraId ||
+					ev.startYear ||
+					ev.startMonthIndex ||
+					ev.startDay
+				) {
+					ev.startEraId = null;
+					ev.startYear = null;
+					ev.startMonthIndex = null;
+					ev.startDay = null;
+					ev.endEraId = null;
+					ev.endYear = null;
+					ev.endMonthIndex = null;
+					ev.endDay = null;
+					ev.startDate = '';
+					ev.endDate = '';
+					changed = true;
+				}
+			}
+			if (changed) await ev.save();
+		}
+	} catch (propErr) {
+		console.warn('Failed to propagate page changes to events:', propErr);
+	}
 	res.json(page);
 });
 
@@ -449,11 +716,46 @@ app.delete('/pages/:id', requireDM, async (req, res) => {
 // -----------------------------------------------------------------------------
 // Upload immagine
 // -----------------------------------------------------------------------------
-app.post('/upload', requireDM, upload.single('file'), (req, res) => {
+app.post('/upload', requireDM, upload.single('file'), async (req, res) => {
 	const file = req.file;
 	if (!file) return res.status(400).json({ error: 'No file uploaded' });
+
 	const url = `/uploads/${file.filename}`;
-	res.json({ url });
+	let thumbUrl = null;
+
+	// Generate thumbnail for images
+	try {
+		const ext = path.extname(file.filename).toLowerCase();
+		const isImage = [
+			'.jpg',
+			'.jpeg',
+			'.png',
+			'.webp',
+			'.gif',
+			'.bmp',
+			'.tiff',
+		].includes(ext);
+
+		if (isImage) {
+			const thumbFilename = `thumb-${file.filename}`;
+			const thumbPath = path.join(UPLOADS_PATH, thumbFilename);
+
+			await sharp(file.path)
+				.resize(300, null, {
+					// 300px width, maintain aspect ratio
+					withoutEnlargement: true,
+					fit: 'inside',
+				})
+				.toFile(thumbPath);
+
+			thumbUrl = `/uploads/${thumbFilename}`;
+		}
+	} catch (err) {
+		console.warn('Thumbnail generation failed:', err);
+		// Continue without thumbnail - not a critical error
+	}
+
+	res.json({ url, thumbUrl });
 });
 
 // Avvio server
@@ -561,14 +863,49 @@ app.get('/assets', async (req, res) => {
 app.post('/assets', requireDM, upload.single('file'), async (req, res) => {
 	try {
 		let url = null;
+		let thumbUrl = null;
+
 		if (req.file) {
 			url = `/uploads/${req.file.filename}`;
+
+			// Generate thumbnail for uploaded images
+			try {
+				const ext = path.extname(req.file.filename).toLowerCase();
+				const isImage = [
+					'.jpg',
+					'.jpeg',
+					'.png',
+					'.webp',
+					'.gif',
+					'.bmp',
+					'.tiff',
+				].includes(ext);
+
+				if (isImage) {
+					const thumbFilename = `thumb-${req.file.filename}`;
+					const thumbPath = path.join(UPLOADS_PATH, thumbFilename);
+
+					await sharp(req.file.path)
+						.resize(300, null, {
+							withoutEnlargement: true,
+							fit: 'inside',
+						})
+						.toFile(thumbPath);
+
+					thumbUrl = `/uploads/${thumbFilename}`;
+				}
+			} catch (err) {
+				console.warn('Thumbnail generation failed:', err);
+			}
 		} else if (req.body && req.body.url) {
 			url = req.body.url;
+			// For external URLs, no thumbnail is generated
 		}
+
 		if (!url)
 			return res.status(400).json({ error: 'file or url is required' });
-		const asset = await Asset.create({ url });
+
+		const asset = await Asset.create({ url, thumb_url: thumbUrl });
 		res.json(asset);
 	} catch (err) {
 		console.error('POST /assets failed', err);
@@ -582,6 +919,64 @@ app.delete('/assets/:id', requireDM, async (req, res) => {
 		const { id } = req.params;
 		const asset = await Asset.findByIdAndDelete(id);
 		if (!asset) return res.status(404).json({ error: 'Asset not found' });
+
+		// Clear references to this asset in Events and Pages
+		const assetUrl = asset.url;
+		const assetThumbUrl = asset.thumb_url;
+
+		// Update Events that reference this asset's URL or thumbnail
+		await Event.updateMany(
+			{
+				$or: [
+					{ bannerUrl: assetUrl },
+					{ bannerUrl: assetThumbUrl },
+					{ bannerThumbUrl: assetUrl },
+					{ bannerThumbUrl: assetThumbUrl },
+				],
+			},
+			{
+				$set: {
+					bannerUrl: null,
+					bannerThumbUrl: null,
+				},
+			}
+		);
+
+		// Update Pages that reference this asset's URL or thumbnail
+		await Page.updateMany(
+			{
+				$or: [
+					{ bannerUrl: assetUrl },
+					{ bannerUrl: assetThumbUrl },
+					{ bannerThumbUrl: assetUrl },
+					{ bannerThumbUrl: assetThumbUrl },
+				],
+			},
+			{
+				$set: {
+					bannerUrl: null,
+					bannerThumbUrl: null,
+				},
+			}
+		);
+
+		// Clear references in Page blocks (image blocks with url field)
+		await Page.updateMany(
+			{ 'blocks.url': { $in: [assetUrl, assetThumbUrl] } },
+			{
+				$set: {
+					'blocks.$[elem].url': null,
+				},
+			},
+			{
+				arrayFilters: [
+					{
+						'elem.url': { $in: [assetUrl, assetThumbUrl] },
+					},
+				],
+			}
+		);
+
 		// Attempt to unlink local file if served from /uploads
 		if (asset.url && asset.url.startsWith('/uploads/')) {
 			try {
@@ -591,6 +986,20 @@ app.delete('/assets/:id', requireDM, async (req, res) => {
 				// ignore unlink errors
 			}
 		}
+
+		// Also remove thumbnail file if it exists
+		if (asset.thumb_url && asset.thumb_url.startsWith('/uploads/')) {
+			try {
+				const p = path.join(
+					UPLOADS_PATH,
+					path.basename(asset.thumb_url)
+				);
+				fs.unlink(p, () => {});
+			} catch (e) {
+				// ignore unlink errors
+			}
+		}
+
 		res.json({ success: true });
 	} catch (err) {
 		console.error('DELETE /assets/:id failed', err);
@@ -645,7 +1054,835 @@ app.post('/external/events', requireExternal, async (req, res) => {
 		order,
 		color,
 	});
-	res.json(event);
+});
+
+// -----------------------------------------------------------------------------
+// Sync Step 1: Preview - Fetch and summarize from Google Doc
+// -----------------------------------------------------------------------------
+app.post('/sync/campaign/preview', requireDM, async (req, res) => {
+	try {
+		let { docId, url, summarize, googleAccessToken } = req.body || {};
+
+		// Fallback to token embedded in JWT (set by Google login) if not provided in body
+		if (!googleAccessToken && req.user && req.user.googleAccessToken) {
+			googleAccessToken = req.user.googleAccessToken;
+		}
+
+		// Helper to attempt token refresh if we have user context
+		const tryRefreshToken = async () => {
+			if (!req.user || !req.user.id) return null;
+			const user = await User.findById(req.user.id);
+			if (!user || !user.googleRefreshToken) return null;
+
+			const refreshed = await refreshGoogleToken(user.googleRefreshToken);
+			if (!refreshed) return null;
+
+			// Update database
+			user.googleAccessToken = refreshed.access_token;
+			user.googleTokenExpiry = new Date(
+				Date.now() + (refreshed.expires_in || 3600) * 1000
+			);
+			await user.save();
+
+			return refreshed.access_token;
+		};
+
+		if (!docId && url) {
+			const m = url.match(/\/document\/d\/([a-zA-Z0-9_-]+)/);
+			docId = m ? m[1] : null;
+		}
+		if (!docId) {
+			return res.status(400).json({ error: 'docId or url required' });
+		}
+
+		const doSummarize = summarize !== false;
+
+		// 1) Find the latest existing page by sessionDate to avoid duplicate imports
+		const pages = await Page.find({
+			type: 'campaign',
+			sessionDate: { $exists: true },
+		});
+		const parseDDMMYYYY = (str) => {
+			if (!str) return null;
+			const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(
+				String(str).trim()
+			);
+			if (!m) return null;
+			const [_, dd, mm, yyyy] = m;
+			const d = new Date(Number(yyyy), Number(mm) - 1, Number(dd));
+			return isNaN(d.getTime()) ? null : d;
+		};
+		const latestLocal = pages.reduce((acc, p) => {
+			const d = parseDDMMYYYY(p.sessionDate);
+			return d && (!acc || d > acc) ? d : acc;
+		}, null);
+
+		// 2) Fetch Google Doc as plain text
+		let txt = null;
+
+		// Try public export first
+		const exportUrl = `https://docs.google.com/document/d/${docId}/export?format=txt`;
+		const publicResp = await fetch(exportUrl);
+
+		if (publicResp.ok) {
+			txt = await publicResp.text();
+		} else if (googleAccessToken) {
+			// Use user's Google access token to fetch via Docs API
+			let docsResp = await fetch(
+				`https://docs.googleapis.com/v1/documents/${docId}`,
+				{ headers: { Authorization: `Bearer ${googleAccessToken}` } }
+			);
+
+			// If 401, attempt token refresh and retry once
+			if (docsResp.status === 401) {
+				console.log(
+					'Google API returned 401, attempting token refresh...'
+				);
+				const newToken = await tryRefreshToken();
+				if (newToken) {
+					googleAccessToken = newToken;
+					docsResp = await fetch(
+						`https://docs.googleapis.com/v1/documents/${docId}`,
+						{ headers: { Authorization: `Bearer ${newToken}` } }
+					);
+				}
+			}
+
+			try {
+				if (docsResp.ok) {
+					const doc = await docsResp.json();
+					// Extract plain text from structured document
+					if (doc.body && doc.body.content) {
+						const textParts = [];
+						const extractText = (elements) => {
+							for (const el of elements) {
+								if (el.paragraph && el.paragraph.elements) {
+									for (const elem of el.paragraph.elements) {
+										if (
+											elem.textRun &&
+											elem.textRun.content
+										) {
+											textParts.push(
+												elem.textRun.content
+											);
+										}
+									}
+								}
+								if (el.table && el.table.tableRows) {
+									for (const row of el.table.tableRows) {
+										if (row.tableCells) {
+											for (const cell of row.tableCells) {
+												if (cell.content) {
+													extractText(cell.content);
+												}
+											}
+										}
+									}
+								}
+							}
+						};
+						extractText(doc.body.content);
+						txt = textParts.join('');
+					}
+				}
+			} catch (err) {
+				console.error('Error parsing Docs API response:', err);
+			}
+		} // Close else if (googleAccessToken) block
+
+		if (!txt) {
+			return res
+				.status(400)
+				.json({
+					error: 'Could not fetch document. Make sure it is publicly accessible or provide a valid Google access token.',
+				});
+		}
+
+		// 3) Parse out sections by date headers (DD.MM.YYYY format) and retain only the latest
+		const dateRegex = /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/;
+		const sections = [];
+		const lines = txt.split(/\r?\n/);
+		let currSection = null;
+
+		for (const line of lines) {
+			const trimmed = line.trim();
+			const match = dateRegex.exec(trimmed);
+			if (match) {
+				// Found a date header
+				if (currSection) sections.push(currSection);
+				const [_, dd, mm, yyyy] = match;
+				currSection = {
+					date: trimmed, // Store as DD.MM.YYYY
+					content: [],
+				};
+			} else if (currSection) {
+				currSection.content.push(line);
+			}
+		}
+		if (currSection) sections.push(currSection);
+		
+	if (sections.length === 0) {
+		return res.json({
+			message: 'No date section found (looking for DD.MM.YYYY format)',
+			preview: null,
+		});
+	}
+
+	// Get the last date section from the file
+	const lastSection = sections[sections.length - 1];
+	console.log('Last section date:', lastSection.date);
+	
+	// Convert DD.MM.YYYY to DD/MM/YYYY for parsing
+	const dateForParsing = lastSection.date.replace(/\./g, '/');
+	console.log('Date for parsing:', dateForParsing);
+	const lastDate = parseDDMMYYYY(dateForParsing);
+	
+	if (!lastDate) {
+		return res.json({
+			message: `Could not parse the last date section: ${lastSection.date}`,
+			preview: null,
+		});
+	}
+
+	// Compare with latest campaign page
+	if (latestLocal && lastDate <= latestLocal) {
+		return res.json({
+			message: 'No newer section found (last section date is not newer than latest page)',
+			preview: null,
+		});
+	}
+
+	const chosen = lastSection;		const rawText = chosen.content.join('\n').trim();
+		const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+		let summary = rawText;
+
+		if (OPENAI_API_KEY && doSummarize) {
+			console.log('Summarizing session via OpenAI...');
+			try {
+				const targetWords = 520;
+				const maxTokens = Math.max(
+					800,
+					Math.min(6000, Math.ceil(targetWords * 2.5))
+				);
+				const headers = {
+					Authorization: `Bearer ${OPENAI_API_KEY}`,
+					'Content-Type': 'application/json',
+				};
+				if (process.env.OPENAI_ORG_ID)
+					headers['OpenAI-Organization'] = process.env.OPENAI_ORG_ID;
+				if (process.env.OPENAI_PROJECT_ID)
+					headers['OpenAI-Project'] = process.env.OPENAI_PROJECT_ID;
+
+				// Extract explicit dialogue candidates from notes to prevent invention
+				const extractDialogues = (src) => {
+					const lines = String(src).split(/\r?\n/);
+					const map = new Map([
+						['O:', 'Owen'],
+						['A:', 'Ardi'],
+						['F:', 'Farek'],
+						['BRUNO>', 'Bruno'],
+						['BRUNO:', 'Bruno'],
+						['OWEN:', 'Owen'],
+						['ARDI:', 'Ardi'],
+						['FAREK:', 'Farek'],
+						['LYSARA:', 'Lysara'],
+						['OBYRON:', 'Obyron'],
+						['RAIDAN:', 'Raidan'],
+					]);
+					const found = [];
+					for (const raw of lines) {
+						const line = raw.trim();
+						if (!line) continue;
+						let matched = false;
+						for (const [mk, name] of map.entries()) {
+							if (line.startsWith(mk)) {
+								let content = line.slice(mk.length).trim();
+								if (content)
+									found.push({
+										speaker: name,
+										text: content,
+									});
+								matched = true;
+								break;
+							}
+						}
+						if (matched) continue;
+						const m = line.match(
+							/^(Owen|Ardi|Farek|Bruno|Lysara|Obyron|Raidan)\s*:\s*(.+)$/i
+						);
+						if (m) {
+							found.push({
+								speaker:
+									m[1][0].toUpperCase() +
+									m[1].slice(1).toLowerCase(),
+								text: m[2].trim(),
+							});
+						}
+					}
+					const uniq = [];
+					const seen = new Set();
+					for (const d of found) {
+						const key = d.speaker + '|' + d.text;
+						if (seen.has(key)) continue;
+						seen.add(key);
+						uniq.push({
+							speaker: d.speaker,
+							text: d.text.slice(0, 200),
+						});
+					}
+					return uniq.slice(0, 12);
+				};
+				const allowed = extractDialogues(rawText);
+				const allowedList = allowed.length
+					? `\n\nUsa SOLO queste battute esplicite se vuoi inserire dialoghi (altrimenti ometti i dialoghi se non bastano):\n` +
+					  allowed.map((d) => `- ${d.speaker}: ${d.text}`).join('\n')
+					: '';
+
+				const resp = await fetch(
+					'https://api.openai.com/v1/chat/completions',
+					{
+						method: 'POST',
+						headers,
+						body: JSON.stringify({
+							model: 'gpt-4o-mini',
+							messages: [
+								{
+									role: 'system',
+									content: `Cronista D&D. Resoconto narrativo in Italiano, 4–7 paragrafi, stile evocativo. NON INVENTARE. Solo fatti/dialoghi dalle note. Battute tra "" con nome (O:→Owen, A:→Ardi, F:→Farek, BRUNO:→Bruno). No preamboli. ~${targetWords} parole.`,
+								},
+								{
+									role: 'user',
+									content: `Trasforma note in resoconto. SOLO dialoghi espliciti (O:→Owen, A:→Ardi, F:→Farek, BRUNO:→Bruno). NON INVENTARE.${allowedList}\n\n${rawText}`,
+								},
+							],
+							temperature: 0.7,
+							max_completion_tokens: maxTokens,
+						}),
+					}
+				);
+				const data = await resp.json();
+				const choice = data?.choices?.[0];
+				const finishReason = choice?.finish_reason;
+				const content =
+					choice?.message?.content?.trim() || choice?.text?.trim();
+
+				if (finishReason === 'length') {
+					console.warn(
+						`OpenAI response was truncated. Consider increasing max_completion_tokens (current: ${maxTokens})`
+					);
+				}
+
+				if (content) summary = content;
+			} catch (e) {
+				console.error('OpenAI call failed', e);
+			}
+		}
+
+		// Return preview data
+		res.json({
+			preview: {
+				summary,
+				sessionDate: chosen.date,
+				suggestedTitle: `Session ${chosen.date}`,
+				rawText,
+			},
+		});
+	} catch (err) {
+		console.error(err);
+		res.status(500).json({ error: err.message || 'Server error' });
+	}
+});
+
+// -----------------------------------------------------------------------------
+// Sync Step 2: Create - Save the page and event with custom fields
+// -----------------------------------------------------------------------------
+app.post('/sync/campaign/create', requireDM, async (req, res) => {
+	try {
+		const { summary, sessionDate, title, subtitle, worldDate, bannerUrl } =
+			req.body || {};
+
+		if (!summary || !sessionDate) {
+			return res
+				.status(400)
+				.json({ error: 'summary and sessionDate are required' });
+		}
+
+		// Split summary into paragraphs for TipTap format
+		const paragraphs = String(summary)
+			.replace(/\r\n/g, '\n')
+			.split(/\n{2,}/)
+			.map((p) => p.trim())
+			.filter(Boolean);
+
+		const tiptap = {
+			type: 'doc',
+			content:
+				paragraphs.length > 0
+					? paragraphs.map((p) => ({
+							type: 'paragraph',
+							content: [{ type: 'text', text: p }],
+					  }))
+					: [
+							{
+								type: 'paragraph',
+								content: [{ type: 'text', text: summary }],
+							},
+					  ],
+		};
+
+		const page = await Page.create({
+			title: title || 'Untitled Session',
+			subtitle: subtitle || '',
+			type: 'campaign',
+			blocks: [{ type: 'rich', rich: tiptap, plainText: summary }],
+			sessionDate,
+			worldDate: worldDate || null,
+			bannerUrl: bannerUrl || '',
+			draft: true,
+		});
+
+		// Create a timeline event in the Campaign group
+		let campaignGroup = await Group.findOne({
+			name: { $regex: /(campaign|session)/i },
+		});
+		if (!campaignGroup) {
+			const count = await Group.countDocuments();
+			campaignGroup = await Group.create({
+				name: 'Campaign',
+				order: count,
+			});
+		}
+
+		let createdEvent = null;
+		try {
+			const last = await Event.findOne().sort({ order: -1 });
+			const order = last ? last.order + 1 : 0;
+			
+			// Parse worldDate object into separate fields for Event
+			let eventDateFields = {};
+			if (worldDate && typeof worldDate === 'object') {
+				eventDateFields = {
+					startEraId: worldDate.eraId || null,
+					startYear: worldDate.year ? Number(worldDate.year) : null,
+					startMonthIndex: worldDate.monthIndex ? Number(worldDate.monthIndex) : null,
+					startDay: worldDate.day ? Number(worldDate.day) : null,
+				};
+			}
+			
+			console.log('Creating event with:', { title: page.title, type: 'campaign', groupId: campaignGroup._id, pageId: page._id, hidden: true, linkSync: true, order, ...eventDateFields });
+			createdEvent = await Event.create({
+				title: page.title,
+				type: 'campaign',
+				groupId: campaignGroup._id,
+				pageId: page._id,
+				hidden: true,
+				linkSync: true,
+				order,
+				...eventDateFields,
+			});
+			console.log('Event created successfully:', createdEvent._id);
+		} catch (evErr) {
+			console.error('Failed to create event for synced session:', evErr);
+		}
+
+		console.log('Responding with page and event:', { pageId: page._id, eventId: createdEvent?._id });
+		res.json({ created: page, event: createdEvent });
+	} catch (err) {
+		console.error(err);
+		res.status(500).json({ error: err.message || 'Server error' });
+	}
+});
+
+// -----------------------------------------------------------------------------
+// Sync (Legacy): import latest session from Google Doc, summarize, create draft campaign page
+// -----------------------------------------------------------------------------
+app.post('/sync/campaign/from-google', requireDM, async (req, res) => {
+	try {
+		let {
+			docId,
+			url,
+			summarize,
+			title: customTitle,
+			googleAccessToken,
+			summaryTargetWords,
+			keepDialogues,
+			worldDate,
+		} = req.body || {};
+
+		// Fallback to token embedded in JWT (set by Google login) if not provided in body
+		if (!googleAccessToken && req.user && req.user.googleAccessToken) {
+			googleAccessToken = req.user.googleAccessToken;
+		}
+
+		// Helper to attempt token refresh if we have user context
+		const tryRefreshToken = async () => {
+			if (!req.user || !req.user.id) return null;
+			const user = await User.findById(req.user.id);
+			if (!user || !user.googleRefreshToken) return null;
+
+			const refreshed = await refreshGoogleToken(user.googleRefreshToken);
+			if (!refreshed) return null;
+
+			// Update database
+			user.googleAccessToken = refreshed.accessToken;
+			user.googleTokenExpiry = new Date(
+				Date.now() + refreshed.expiresIn * 1000
+			);
+			await user.save();
+
+			return refreshed.accessToken;
+		};
+
+		if (!docId && url) {
+			const m = String(url).match(/\/document\/d\/([a-zA-Z0-9_-]+)/);
+			if (m) docId = m[1];
+		}
+		if (!docId) return res.status(400).json({ error: 'docId is required' });
+		const doSummarize = summarize !== false; // default true
+
+		// 1) Fetch existing campaign pages and determine latest sessionDate
+		const pages = await Page.find({ type: 'campaign' });
+		const parseDDMMYYYY = (s) => {
+			if (!s || typeof s !== 'string') return null;
+			const m = s.match(/^(\d{2})[./-](\d{2})[./-](\d{4})$/);
+			if (!m) return null;
+			const [_, dd, mm, yyyy] = m;
+			const d = new Date(Number(yyyy), Number(mm) - 1, Number(dd));
+			return isNaN(d.getTime()) ? null : d;
+		};
+		const latestLocal = pages.reduce((acc, p) => {
+			const d = parseDDMMYYYY(p.sessionDate);
+			return d && (!acc || d > acc) ? d : acc;
+		}, null);
+
+		// 2) Fetch Google Doc as plain text
+		let txt = null;
+
+		// Try public export first
+		const exportUrl = `https://docs.google.com/document/d/${docId}/export?format=txt`;
+		const publicResp = await fetch(exportUrl);
+
+		if (publicResp.ok) {
+			txt = await publicResp.text();
+		} else if (googleAccessToken) {
+			// Use user's Google access token to fetch via Docs API
+			let docsResp = await fetch(
+				`https://docs.googleapis.com/v1/documents/${docId}`,
+				{ headers: { Authorization: `Bearer ${googleAccessToken}` } }
+			);
+
+			// If 401, attempt token refresh and retry once
+			if (docsResp.status === 401) {
+				console.log(
+					'Google API returned 401, attempting token refresh...'
+				);
+				const newToken = await tryRefreshToken();
+				if (newToken) {
+					googleAccessToken = newToken;
+					docsResp = await fetch(
+						`https://docs.googleapis.com/v1/documents/${docId}`,
+						{ headers: { Authorization: `Bearer ${newToken}` } }
+					);
+				}
+			}
+
+			try {
+				if (docsResp.ok) {
+					const doc = await docsResp.json();
+					// Extract plain text from structured document
+					if (doc.body && doc.body.content) {
+						const textParts = [];
+						const extractText = (elements) => {
+							for (const el of elements) {
+								if (el.paragraph && el.paragraph.elements) {
+									for (const elem of el.paragraph.elements) {
+										if (
+											elem.textRun &&
+											elem.textRun.content
+										) {
+											textParts.push(
+												elem.textRun.content
+											);
+										}
+									}
+								}
+							}
+						};
+						extractText(doc.body.content);
+						txt = textParts.join('');
+					}
+				} else {
+					// Log diagnostic to help user understand why it failed
+					const errTxt = await docsResp.text().catch(() => '');
+					console.warn(
+						'Docs API request failed',
+						docsResp.status,
+						docsResp.statusText,
+						errTxt
+					);
+				}
+			} catch (oauthErr) {
+				console.error('OAuth with user token failed:', oauthErr);
+			}
+		}
+
+		if (!txt) {
+			return res.status(400).json({
+				error: 'Failed to fetch Google Doc. Ensure it is public OR shared with the Google account you used to log in. Also verify Docs API is enabled and consent granted.',
+			});
+		}
+
+		// 3) Parse headings as dates (DD/MM/YYYY). Take last section newer than local latest
+		const lines = txt.split(/\r?\n/);
+		const dateLineRE = /^(\d{2})[./-](\d{2})[./-](\d{4})$/;
+		const sections = [];
+		let current = null;
+		for (const line of lines) {
+			const m = line.trim().match(dateLineRE);
+			if (m) {
+				if (current) sections.push(current);
+				const ddmmyyyy = `${m[1]}/${m[2]}/${m[3]}`; // normalize to slashes
+				current = { date: ddmmyyyy, content: [] };
+			} else if (current) {
+				current.content.push(line);
+			}
+		}
+		if (current) sections.push(current);
+		if (sections.length === 0)
+			return res
+				.status(400)
+				.json({
+					error: 'No date headings found. Use DD/MM/YYYY, DD.MM.YYYY, or DD-MM-YYYY on its own line.',
+				});
+
+		// Find the newest section newer than latestLocal
+		let chosen = null;
+		for (let i = sections.length - 1; i >= 0; i--) {
+			const s = sections[i];
+			const d = parseDDMMYYYY(s.date);
+			if (!d) continue;
+			if (!latestLocal || d > latestLocal) {
+				chosen = s;
+				break;
+			}
+		}
+		if (!chosen) {
+			return res.json({
+				message: 'No newer section found',
+				created: null,
+			});
+		}
+
+		const rawText = chosen.content.join('\n').trim();
+		const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+		let summary = rawText;
+		if (OPENAI_API_KEY && doSummarize) {
+			console.log('Summarizing session via OpenAI...');
+			try {
+				// Determine desired length (default to a rich narrative recap)
+				const targetWords = Math.max(
+					300,
+					Math.min(900, Number(summaryTargetWords) || 520)
+				);
+				// Increase token multiplier significantly for Italian (longer words), formatting, and narrative style
+				const maxTokens = Math.max(
+					800,
+					Math.min(6000, Math.ceil(targetWords * 2.5))
+				);
+				const headers = {
+					Authorization: `Bearer ${OPENAI_API_KEY}`,
+					'Content-Type': 'application/json',
+				};
+				if (process.env.OPENAI_ORG_ID)
+					headers['OpenAI-Organization'] = process.env.OPENAI_ORG_ID;
+				if (process.env.OPENAI_PROJECT_ID)
+					headers['OpenAI-Project'] = process.env.OPENAI_PROJECT_ID;
+
+				// Extract explicit dialogue candidates from notes to prevent invention
+				const extractDialogues = (src) => {
+					const lines = String(src).split(/\r?\n/);
+					const map = new Map([
+						['O:', 'Owen'],
+						['A:', 'Ardi'],
+						['F:', 'Farek'],
+						['BRUNO>', 'Bruno'],
+						['BRUNO:', 'Bruno'],
+						['OWEN:', 'Owen'],
+						['ARDI:', 'Ardi'],
+						['FAREK:', 'Farek'],
+						['LYSARA:', 'Lysara'],
+						['OBYRON:', 'Obyron'],
+						['RAIDAN:', 'Raidan'],
+					]);
+					const found = [];
+					for (const raw of lines) {
+						const line = raw.trim();
+						if (!line) continue;
+						let matched = false;
+						for (const [mk, name] of map.entries()) {
+							if (line.startsWith(mk)) {
+								let content = line.slice(mk.length).trim();
+								if (content)
+									found.push({
+										speaker: name,
+										text: content,
+									});
+								matched = true;
+								break;
+							}
+						}
+						if (matched) continue;
+						const m = line.match(
+							/^(Owen|Ardi|Farek|Bruno|Lysara|Obyron|Raidan)\s*:\s*(.+)$/i
+						);
+						if (m) {
+							found.push({
+								speaker:
+									m[1][0].toUpperCase() +
+									m[1].slice(1).toLowerCase(),
+								text: m[2].trim(),
+							});
+						}
+					}
+					// Deduplicate and clip
+					const uniq = [];
+					const seen = new Set();
+					for (const d of found) {
+						const key = d.speaker + '|' + d.text;
+						if (seen.has(key)) continue;
+						seen.add(key);
+						uniq.push({
+							speaker: d.speaker,
+							text: d.text.slice(0, 200),
+						});
+					}
+					return uniq.slice(0, 12);
+				};
+				const allowed = extractDialogues(rawText);
+				const allowedList = allowed.length
+					? `\n\nUsa SOLO queste battute esplicite se vuoi inserire dialoghi (altrimenti ometti i dialoghi se non bastano):\n` +
+					  allowed.map((d) => `- ${d.speaker}: ${d.text}`).join('\n')
+					: '';
+
+				const resp = await fetch(
+					'https://api.openai.com/v1/chat/completions',
+					{
+						method: 'POST',
+						headers,
+						body: JSON.stringify({
+							model: 'gpt-4o-mini',
+							messages: [
+								{
+									role: 'system',
+									content: `Sei un cronista di sessioni D&D. Scrivi un resoconto narrativo in Italiano in 4–7 paragrafi, con una prosa evocativa, in stile Patrick Rothfuss, ma leggibile. NON INVENTARE NULLA: nessun fatto, nessun dialogo. Riporta SOLO ciò che è presente nelle note. Se compaiono battute dirette (righe con marcatori come O:, A:, F:, BRUNO>), riportale tra virgolette “”, con attribuzione esplicita mappando i marcatori a nomi (Owen, Ardi, Farek, Bruno, Lysara, Obyron, Raidan). Se le battute dirette sono meno di tre, includi solo quelle esistenti; se non ce ne sono, non aggiungere dialoghi. Non parafrasare testo non dialogico come se fosse dialogo. Mantieni i nomi e i dettagli chiave (luoghi, magie, ferite, mosse). Evita preamboli e conclusioni meta; entra subito nell’azione. Preferisci frasi non troppo lunghe. Lunghezza desiderata: ~${targetWords} parole.`,
+								},
+								{
+									role: 'user',
+									content: `Trasforma le seguenti note in un resoconto narrativo coerente. Riporta SOLO dialoghi che appaiono esplicitamente nelle note, fedeli o con minime correzioni di punteggiatura, con il nome del parlante (es. Owen: “…”). Se nelle note compaiono marcatori come O:, A:, F:, BRUNO>, mappali a Owen, Ardi, Farek, Bruno. Se non ci sono battute dirette, non inserirne. NON INVENTARE fatti o battute. Mantieni l’atmosfera e i nomi.${allowedList}\n\n${rawText}`,
+								},
+							],
+							temperature: 0.7,
+							max_completion_tokens: maxTokens,
+						}),
+					}
+				);
+				const data = await resp.json();
+				const choice = data?.choices?.[0];
+				const finishReason = choice?.finish_reason;
+				const content =
+					choice?.message?.content?.trim() || choice?.text?.trim();
+
+				// Log if the response was truncated
+				if (finishReason === 'length') {
+					console.warn(
+						`OpenAI response was truncated. Consider increasing max_completion_tokens (current: ${maxTokens})`
+					);
+				}
+
+				if (content) summary = content;
+			} catch (e) {
+				console.error('OpenAI call failed', e);
+			}
+		}
+
+		// 4) Create a draft campaign page with one rich block from summary
+		// Split summary into paragraphs for better formatting in the editor
+		const paragraphs = String(summary)
+			.replace(/\r\n/g, '\n')
+			.split(/\n{2,}/)
+			.map((p) => p.trim())
+			.filter(Boolean);
+
+		console.log(
+			`Summary length: ${summary.length} chars, ${paragraphs.length} paragraphs`
+		);
+
+		const tiptap = {
+			type: 'doc',
+			content:
+				paragraphs.length > 0
+					? paragraphs.map((p) => ({
+							type: 'paragraph',
+							content: [{ type: 'text', text: p }],
+					  }))
+					: [
+							{
+								type: 'paragraph',
+								content: [{ type: 'text', text: summary }],
+							},
+					  ],
+		};
+		const pageTitle = customTitle?.trim() || `Session ${chosen.date}`;
+		const page = await Page.create({
+			title: pageTitle,
+			type: 'campaign',
+			subtitle: '',
+			blocks: [{ type: 'rich', rich: tiptap, plainText: summary }],
+			sessionDate: chosen.date,
+			worldDate: worldDate || null,
+			draft: true,
+		});
+
+		console.log(
+			`Created page with ${page.blocks[0].plainText.length} chars in plainText`
+		);
+
+		// 5) Also create a timeline event in the Campaign group
+		let campaignGroup = await Group.findOne({
+			name: { $regex: /(campaign|session)/i },
+		});
+		if (!campaignGroup) {
+			// If no groups exist yet, create the Campaign group automatically
+			const count = await Group.countDocuments();
+			campaignGroup = await Group.create({
+				name: 'Campaign',
+				order: count,
+			});
+		}
+		let createdEvent = null;
+		try {
+			createdEvent = await Event.create({
+				title: pageTitle,
+				type: 'campaign',
+				startDate: chosen.date,
+				groupId: campaignGroup?._id,
+				pageId: page._id,
+				detailLevel: 'Day',
+				linkSync: true,
+				hidden: true,
+			});
+		} catch (e) {
+			console.warn(
+				'Failed to auto-create campaign event:',
+				e?.message || e
+			);
+		}
+
+		res.json({ created: page, event: createdEvent });
+	} catch (e) {
+		console.error('/sync/campaign/from-google failed', e);
+		res.status(500).json({ error: 'Internal error' });
+	}
 });
 
 // Create a page via external automation. Expects title, type, bannerUrl, content, hidden, draft.
@@ -669,4 +1906,194 @@ app.post('/external/pages', requireExternal, async (req, res) => {
 		draft,
 	});
 	res.json(page);
+});
+
+// -----------------------------------------------------------------------------
+// Test endpoint: OpenAI summarization sandbox for DMs
+// -----------------------------------------------------------------------------
+app.post('/test/openai/summarize', async (req, res) => {
+	try {
+		const {
+			text,
+			model,
+			language = 'it',
+			bulletPoints = false,
+			targetWords = 520,
+			temperature = 0.3,
+			style = 'narrative', // 'neutral' | 'executive' | 'narrative'
+			returnPrompt = true,
+		} = req.body || {};
+
+		if (!text || typeof text !== 'string' || !text.trim()) {
+			return res.status(400).json({ error: 'text is required' });
+		}
+		const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+		if (!OPENAI_API_KEY) {
+			return res
+				.status(400)
+				.json({ error: 'OPENAI_API_KEY missing on server' });
+		}
+
+		// Default to a reliable, inexpensive model that supports temperature
+		const modelToUse = model || 'gpt-4o-mini';
+
+		// Build a clear, testable prompt with explicit constraints
+		const langHint = language === 'it' ? 'Italiano' : 'English';
+		const lengthRule = `Keep it under ~${targetWords} words.`;
+		const styleRule =
+			style === 'executive'
+				? 'Use crisp, non-poetic language suitable for an executive summary.'
+				: style === 'narrative'
+				? 'Use a light narrative tone, but stay concise and avoid flowery prose.'
+				: 'Use neutral, concise language.';
+		const formatRule = bulletPoints
+			? 'Return 5–8 bullet points, each on its own line. No preamble.'
+			: 'Return a single concise paragraph. No preamble.';
+
+		// Extract explicit dialogue candidates from input text to prevent invention
+		const extractDialogues = (src) => {
+			const lines = String(src).split(/\r?\n/);
+			const map = new Map([
+				['O:', 'Owen'],
+				['A:', 'Ardi'],
+				['F:', 'Farek'],
+				['BRUNO>', 'Bruno'],
+				['BRUNO:', 'Bruno'],
+				['OWEN:', 'Owen'],
+				['ARDI:', 'Ardi'],
+				['FAREK:', 'Farek'],
+				['LYSARA:', 'Lysara'],
+				['OBYRON:', 'Obyron'],
+				['RAIDAN:', 'Raidan'],
+			]);
+			const found = [];
+			for (const raw of lines) {
+				const line = raw.trim();
+				if (!line) continue;
+				let matched = false;
+				for (const [mk, name] of map.entries()) {
+					if (line.startsWith(mk)) {
+						let content = line.slice(mk.length).trim();
+						if (content)
+							found.push({ speaker: name, text: content });
+						matched = true;
+						break;
+					}
+				}
+				if (matched) continue;
+				const m = line.match(
+					/^(Owen|Ardi|Farek|Bruno|Lysara|Obyron|Raidan)\s*:\s*(.+)$/i
+				);
+				if (m) {
+					found.push({
+						speaker:
+							m[1][0].toUpperCase() + m[1].slice(1).toLowerCase(),
+						text: m[2].trim(),
+					});
+				}
+			}
+			const uniq = [];
+			const seen = new Set();
+			for (const d of found) {
+				const key = d.speaker + '|' + d.text;
+				if (seen.has(key)) continue;
+				seen.add(key);
+				uniq.push({ speaker: d.speaker, text: d.text.slice(0, 200) });
+			}
+			return uniq.slice(0, 12);
+		};
+		const allowed = extractDialogues(text);
+		const allowedList = allowed.length
+			? `\n\nUse ONLY these explicit lines if you include dialogue (otherwise omit dialogue if none match):\n` +
+			  allowed.map((d) => `- ${d.speaker}: ${d.text}`).join('\n')
+			: '';
+
+		const systemPrompt = `You are a narrative chronicler for D&D sessions. Always:
+${lengthRule}
+${styleRule}
+Write in ${langHint}.
+Return 4–7 short paragraphs separated by blank lines.
+DO NOT INVENT ANYTHING: no facts, no dialogues. Include ONLY direct quotes that explicitly appear in the notes (verbatim or with minimal punctuation cleanup), with speaker attribution (e.g., Ardi: “…”). If the notes contain markers like O:, A:, F:, BRUNO>, map them to names (Owen, Ardi, Farek, Bruno, Lysara, Obyron, Raidan). If fewer than 3 quotes exist, include only those; if none exist, include zero dialogues. Do not paraphrase non-dialogue text as dialogue. Preserve names, places, spells, wounds.
+Avoid meta prefaces—start in medias res.`;
+		const userPrompt = `Trasforma le note in un resoconto narrativo coerente. Riporta SOLO dialoghi che compaiono esplicitamente nelle note (con eventuali minime correzioni di punteggiatura), con attribuzione del parlante (es. Owen: “…”). Se nelle note compaiono marcatori come O:, A:, F:, BRUNO>, mappali a Owen, Ardi, Farek, Bruno, Lysara, Obyron, Raidan. Se i dialoghi espliciti sono meno di tre, includi solo quelli; se non ci sono, non inserirne. NON INVENTARE fatti o battute. Mantieni atmosfera ed eventi.${allowedList}\n\n${text}`;
+
+		// Approximate token cap from target words (roughly 1.5 tokens per word)
+		const maxTokens = Math.max(
+			64,
+			Math.min(2048, Math.ceil((targetWords || 120) * 1.5))
+		);
+
+		const headers = {
+			Authorization: `Bearer ${OPENAI_API_KEY}`,
+			'Content-Type': 'application/json',
+		};
+		// Optional org/project headers if provided via env (helps route billing correctly)
+		if (process.env.OPENAI_ORG_ID)
+			headers['OpenAI-Organization'] = process.env.OPENAI_ORG_ID;
+		if (process.env.OPENAI_PROJECT_ID)
+			headers['OpenAI-Project'] = process.env.OPENAI_PROJECT_ID;
+
+		// Build request body and include temperature only for models that support it
+		const body = {
+			model: modelToUse,
+			max_completion_tokens: maxTokens,
+			messages: [
+				{ role: 'system', content: systemPrompt },
+				{ role: 'user', content: userPrompt },
+			],
+		};
+		const supportsTemperature =
+			/4o|gpt-4|mini|turbo/i.test(modelToUse) &&
+			!/gpt-5/i.test(modelToUse);
+		if (supportsTemperature) {
+			body.temperature =
+				typeof temperature === 'number' ? temperature : 0.7;
+		}
+
+		const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+			method: 'POST',
+			headers,
+			body: JSON.stringify(body),
+		});
+		const data = await resp.json();
+		if (!resp.ok) {
+			return res.status(resp.status).json({
+				error: 'OpenAI request failed',
+				status: resp.status,
+				details: data,
+			});
+		}
+
+		// Extract output - handle standard and alternative formats
+		const choice = data?.choices?.[0];
+		let output = '';
+		if (choice?.message?.content) {
+			output = String(choice.message.content).trim();
+		} else if (choice?.text) {
+			output = String(choice.text).trim();
+		}
+
+		if (!output && choice) {
+			console.log(
+				'Empty output detected. Full choice:',
+				JSON.stringify(choice, null, 2)
+			);
+		}
+
+		return res.json({
+			ok: true,
+			usedOpenAI: true,
+			model: modelToUse,
+			output,
+			usage: data?.usage || null,
+			rawChoice: !output ? choice : undefined,
+			prompt: returnPrompt
+				? { system: systemPrompt, user: userPrompt }
+				: undefined,
+			params: { language, bulletPoints, targetWords, temperature, style },
+		});
+	} catch (err) {
+		console.error('TEST /test/openai/summarize failed', err);
+		return res.status(500).json({ error: 'Internal error' });
+	}
 });

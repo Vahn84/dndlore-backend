@@ -5,6 +5,9 @@ import mongoose from 'mongoose';
 const userSchema = new mongoose.Schema({
 	email: { type: String },
 	role: { type: String, enum: ['DM', 'PLAYER'], default: 'PLAYER' },
+	googleAccessToken: { type: String },
+	googleRefreshToken: { type: String },
+	googleTokenExpiry: { type: Date },
 });
 
 // Groups represent eras or categories of events on the timeline
@@ -19,18 +22,25 @@ const groupSchema = new mongoose.Schema({
 // I blocchi della pagina possono contenere testo o immagine e un flag hidden opzionale
 const pageBlockSchema = new mongoose.Schema(
 	{
-		type: { type: String, enum: ['text', 'image'], required: true },
-		text: { type: String },
-		url: { type: String },
+		id: { type: String }, // optional client-side id
+		type: { type: String, enum: ['rich', 'image'], required: true },
 		hidden: { type: Boolean, default: false },
+
+		// Rich block payload (TipTap JSON)
+		rich: { type: mongoose.Schema.Types.Mixed },
+		plainText: { type: String, default: '' },
+
+		// Image block payload
+		url: { type: String },
 	},
-	{ _id: false }
+	{ _id: false, strict: true }
 );
 
 const pageSchema = new mongoose.Schema(
 	{
 		// Title of the lore page
 		title: { type: String, required: true },
+		subtitle: { type: String, default: '' },
 		// Type of lore page: place, history, myth, people, campaign
 		type: {
 			type: String,
@@ -39,12 +49,21 @@ const pageSchema = new mongoose.Schema(
 		},
 		// Optional banner image URL
 		bannerUrl: { type: String },
+		// Optional banner thumbnail URL (generated from bannerUrl if it's an uploaded image)
+		bannerThumbUrl: { type: String },
 		// Array of content blocks
-		content: { type: [pageBlockSchema], default: [] },
+		blocks: { type: [pageBlockSchema], default: [] },
+		// Real-world session date for campaign pages (DD/MM/YYYY)
+		sessionDate: { type: String },
+		// In-world date for campaign pages (custom calendar)
+		worldDate: {
+			eraId: { type: String },
+			year: { type: Number },
+			monthIndex: { type: Number },
+			day: { type: Number },
+		},
 		// If true, the entire page is hidden from public view
 		hidden: { type: Boolean, default: false },
-		// Store indexes of blocks that should be hidden from public
-		hiddenSections: { type: [Number], default: [] },
 		// Draft flag: if true, the page is not published
 		draft: { type: Boolean, default: false },
 	},
@@ -72,6 +91,8 @@ const eventSchema = new mongoose.Schema(
 		endMonthIndex: { type: Number },
 		endDay: { type: Number },
 		bannerUrl: { type: String },
+		// Banner thumbnail URL (for timeline/list display)
+		bannerThumbUrl: { type: String },
 		// Reference to the group/era this event belongs to
 		groupId: { type: mongoose.Schema.Types.ObjectId, ref: 'Group' },
 		// Reference to the linked lore page (optional)
@@ -83,6 +104,8 @@ const eventSchema = new mongoose.Schema(
 		// Colour used for the event card
 		color: { type: String },
 		icon: { type: String },
+		// Sync flag: when true and pageId is set, keep title, banner, and worldDate synced from the linked page
+		linkSync: { type: Boolean, default: false },
 		// How detailed to display the date for this event in the UI
 		detailLevel: {
 			type: String,
