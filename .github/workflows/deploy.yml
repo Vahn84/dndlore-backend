@@ -88,31 +88,10 @@ jobs:
                       PORT="${{ secrets.BACKEND_PORT }}"
                       if [ -z "$PORT" ]; then PORT=10101; echo "BACKEND_PORT not set; defaulting to $PORT"; else echo "Using BACKEND_PORT=$PORT"; fi
 
-                      # Workaround: Synology Docker ignores --dns flags; resolve Atlas IPs and inject via --add-host
-                      echo "Resolving Atlas hostnames to add to container /etc/hosts..."
-                      SHARD_00=$(nslookup ac-6kizzst-shard-00-00.njjnky5.mongodb.net 8.8.8.8 | grep -A1 'Name:' | grep 'Address:' | awk '{print $2}' | head -1)
-                      SHARD_01=$(nslookup ac-6kizzst-shard-00-01.njjnky5.mongodb.net 8.8.8.8 | grep -A1 'Name:' | grep 'Address:' | awk '{print $2}' | head -1)
-                      SHARD_02=$(nslookup ac-6kizzst-shard-00-02.njjnky5.mongodb.net 8.8.8.8 | grep -A1 'Name:' | grep 'Address:' | awk '{print $2}' | head -1)
-                      
-                      echo "Resolved IPs: SHARD_00=$SHARD_00 SHARD_01=$SHARD_01 SHARD_02=$SHARD_02"
-                      
-                      HOSTS_ARGS=""
-                      if [ -n "$SHARD_00" ]; then 
-                        HOSTS_ARGS="$HOSTS_ARGS --add-host=ac-6kizzst-shard-00-00.njjnky5.mongodb.net:$SHARD_00"
-                        echo "Added host entry: ac-6kizzst-shard-00-00 -> $SHARD_00"
-                      fi
-                      if [ -n "$SHARD_01" ]; then 
-                        HOSTS_ARGS="$HOSTS_ARGS --add-host=ac-6kizzst-shard-00-01.njjnky5.mongodb.net:$SHARD_01"
-                        echo "Added host entry: ac-6kizzst-shard-00-01 -> $SHARD_01"
-                      fi
-                      if [ -n "$SHARD_02" ]; then 
-                        HOSTS_ARGS="$HOSTS_ARGS --add-host=ac-6kizzst-shard-00-02.njjnky5.mongodb.net:$SHARD_02"
-                        echo "Added host entry: ac-6kizzst-shard-00-02 -> $SHARD_02"
-                      fi
-
-                      # Start new backend container (single line to avoid line-continuation issues)
+                      # Start new backend container with host network to fix Alpine DNS/SRV issues
+                      # Host network shares the NAS's DNS resolvers which work correctly
                       docker run -d --name dndlore-backend --restart unless-stopped \
-                        --dns 1.1.1.1 --dns 8.8.8.8 -p "$PORT":"$PORT" $HOSTS_ARGS \
+                        --network host \
                         -e NODE_ENV=production -e PORT="$PORT" \
                         -e FRONTEND_ORIGIN='${{ secrets.FRONTEND_ORIGIN }}' \
                         -e MONGO_URI='${{ secrets.MONGO_URI }}' \
@@ -124,23 +103,13 @@ jobs:
                         -e DM_EMAIL='${{ secrets.DM_EMAIL }}' \
                         -e OPENAI_API_KEY='${{ secrets.OPENAI_API_KEY }}' \
                         -e EXTERNAL_API_KEY='${{ secrets.EXTERNAL_API_KEY }}' \
-                      -v "$DEPLOY_DIR/uploads":/app/uploads --network dndlore-network \
-                      ghcr.io/${{ env.OWNER_LC }}/dndlore-backend:latest
+                        -v "$DEPLOY_DIR/uploads":/app/uploads \
+                        ghcr.io/${{ env.OWNER_LC }}/dndlore-backend:latest
 
                       # Quick post-deploy checks
                       echo "Deployed containers:" && docker ps --filter name=dndlore-backend --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
                       echo "Backend local health check on port $PORT:" \
                         && (curl -sS -o /dev/null -w 'HTTP %{http_code}\n' "http://127.0.0.1:$PORT/health" || true)
-
-                      # DNS diagnostics: verify container can resolve Atlas hostnames
-                      echo "Container /etc/resolv.conf:"
-                      docker exec dndlore-backend cat /etc/resolv.conf || true
-                      echo "DNS test for Atlas shard host:"
-                      docker exec dndlore-backend nslookup ac-6kizzst-shard-00-00.njjnky5.mongodb.net || docker exec dndlore-backend getent hosts ac-6kizzst-shard-00-00.njjnky5.mongodb.net || echo "DNS resolution failed"
-
-                      # Show host and container egress IPs to whitelist in Atlas
-                      echo "Host egress IP (use this in Atlas IP Access List):" && (curl -s https://api.ipify.org || wget -qO- https://api.ipify.org || true) && echo
-                      echo "Container egress IP (may match host):" && docker exec dndlore-backend sh -lc 'wget -qO- https://api.ipify.org 2>/dev/null || curl -s https://api.ipify.org 2>/dev/null || echo "(curl/wget unavailable)"' || true
 
                       # Clean up old images
                       docker image prune -af
