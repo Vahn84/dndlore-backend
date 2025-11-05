@@ -88,18 +88,27 @@ jobs:
                       PORT="${{ secrets.BACKEND_PORT }}"
                       if [ -z "$PORT" ]; then PORT=10101; echo "BACKEND_PORT not set; defaulting to $PORT"; else echo "Using BACKEND_PORT=$PORT"; fi
 
-                      # Workaround: Synology Docker ignores --dns flags; add Atlas hosts to /etc/hosts
-                      # Resolve Atlas shard hostnames from host (where DNS works)
+                      # Workaround: Synology Docker ignores --dns flags; resolve Atlas IPs and inject via --add-host
                       echo "Resolving Atlas hostnames to add to container /etc/hosts..."
-                      SHARD_00=$(getent hosts ac-6kizzst-shard-00-00.njjnky5.mongodb.net | awk '{print $1}' || echo "")
-                      SHARD_01=$(getent hosts ac-6kizzst-shard-00-01.njjnky5.mongodb.net | awk '{print $1}' || echo "")
-                      SHARD_02=$(getent hosts ac-6kizzst-shard-00-02.njjnky5.mongodb.net | awk '{print $1}' || echo "")
+                      SHARD_00=$(nslookup ac-6kizzst-shard-00-00.njjnky5.mongodb.net 8.8.8.8 | grep -A1 'Name:' | grep 'Address:' | awk '{print $2}' | head -1)
+                      SHARD_01=$(nslookup ac-6kizzst-shard-00-01.njjnky5.mongodb.net 8.8.8.8 | grep -A1 'Name:' | grep 'Address:' | awk '{print $2}' | head -1)
+                      SHARD_02=$(nslookup ac-6kizzst-shard-00-02.njjnky5.mongodb.net 8.8.8.8 | grep -A1 'Name:' | grep 'Address:' | awk '{print $2}' | head -1)
+                      
+                      echo "Resolved IPs: SHARD_00=$SHARD_00 SHARD_01=$SHARD_01 SHARD_02=$SHARD_02"
                       
                       HOSTS_ARGS=""
-                      if [ -n "$SHARD_00" ]; then HOSTS_ARGS="$HOSTS_ARGS --add-host=ac-6kizzst-shard-00-00.njjnky5.mongodb.net:$SHARD_00"; fi
-                      if [ -n "$SHARD_01" ]; then HOSTS_ARGS="$HOSTS_ARGS --add-host=ac-6kizzst-shard-00-01.njjnky5.mongodb.net:$SHARD_01"; fi
-                      if [ -n "$SHARD_02" ]; then HOSTS_ARGS="$HOSTS_ARGS --add-host=ac-6kizzst-shard-00-02.njjnky5.mongodb.net:$SHARD_02"; fi
-                      echo "Resolved IPs: SHARD_00=$SHARD_00 SHARD_01=$SHARD_01 SHARD_02=$SHARD_02"
+                      if [ -n "$SHARD_00" ]; then 
+                        HOSTS_ARGS="$HOSTS_ARGS --add-host=ac-6kizzst-shard-00-00.njjnky5.mongodb.net:$SHARD_00"
+                        echo "Added host entry: ac-6kizzst-shard-00-00 -> $SHARD_00"
+                      fi
+                      if [ -n "$SHARD_01" ]; then 
+                        HOSTS_ARGS="$HOSTS_ARGS --add-host=ac-6kizzst-shard-00-01.njjnky5.mongodb.net:$SHARD_01"
+                        echo "Added host entry: ac-6kizzst-shard-00-01 -> $SHARD_01"
+                      fi
+                      if [ -n "$SHARD_02" ]; then 
+                        HOSTS_ARGS="$HOSTS_ARGS --add-host=ac-6kizzst-shard-00-02.njjnky5.mongodb.net:$SHARD_02"
+                        echo "Added host entry: ac-6kizzst-shard-00-02 -> $SHARD_02"
+                      fi
 
                       # Start new backend container (single line to avoid line-continuation issues)
                       docker run -d --name dndlore-backend --restart unless-stopped \
