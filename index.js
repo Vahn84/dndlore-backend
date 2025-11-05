@@ -76,9 +76,9 @@ const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const GOOGLE_CALLBACK_URL =
 	process.env.GOOGLE_CALLBACK_URL ||
 	`http://localhost:${PORT}/auth/google/callback`;
-console.log('GOOGLE_CLIENT_ID:', GOOGLE_CLIENT_ID);
-console.log('GOOGLE_CLIENT_SECRET:', GOOGLE_CLIENT_SECRET);
-console.log('OPENAI_API_KEY present:', !!process.env.OPENAI_API_KEY);
+// Avoid logging sensitive secrets in production logs
+console.log('Google OAuth configured:', !!(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET));
+console.log('OpenAI key configured:', !!process.env.OPENAI_API_KEY);
 
 // Helper function to refresh Google access token using refresh token
 async function refreshGoogleToken(refreshToken) {

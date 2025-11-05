@@ -79,10 +79,11 @@ jobs:
             docker stop dndlore-backend || true
             docker rm dndlore-backend || true
             
-            # Start new backend container
+            # Start new backend container (force reliable DNS for SRV lookups like mongodb+srv)
             docker run -d \
               --name dndlore-backend \
               --restart unless-stopped \
+              --dns 1.1.1.1 --dns 8.8.8.8 \
               -p ${{ secrets.BACKEND_PORT }}:${{ secrets.BACKEND_PORT }} \
               -e NODE_ENV=production \
               -e PORT=${{ secrets.BACKEND_PORT }} \
