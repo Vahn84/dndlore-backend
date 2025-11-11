@@ -11,7 +11,7 @@ import sharp from 'sharp';
 import fs from 'fs';
 import path from 'path';
 import mongoose from 'mongoose';
-import { User, Group, Page, Event, TimeSystem, Asset } from './models.js';
+import { User, Group, Page, Event, TimeSystem, Asset, AssetFolder } from './models.js';
 
 // Carica variabili d'ambiente con valori di default
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:3000';
@@ -563,6 +563,7 @@ app.get('/pages', async (req, res) => {
 	}
 	const lim = Math.min(100, Math.max(1, Number(limit) || 50));
 	const pages = await Page.find(query).limit(lim).sort({ updatedAt: -1 });
+	console.log('Pages fetched', pages)
 	res.json(pages);
 });
 
@@ -576,7 +577,10 @@ app.post('/pages', requireDM, async (req, res) => {
 	const {
 		title,
 		type,
+		placeType,
+		coordinates,
 		bannerUrl,
+		assetId,
 		blocks = [],
 		sessionDate,
 		worldDate,
@@ -589,7 +593,10 @@ app.post('/pages', requireDM, async (req, res) => {
 		title,
 		subtitle: '',
 		type,
+		placeType,
+		coordinates,
 		bannerUrl,
+		assetId,
 		blocks,
 		sessionDate,
 		worldDate,
@@ -602,11 +609,16 @@ app.post('/pages', requireDM, async (req, res) => {
 app.put('/pages/:id', requireDM, async (req, res) => {
 	const { id } = req.params;
 	const update = {};
+	const unset = {};
 	const fields = [
 		'title',
 		'subtitle',
 		'type',
+		'placeType',
+		'coordinates',
 		'bannerUrl',
+		'bannerThumbUrl',
+		'assetId',
 		'blocks',
 		'sessionDate',
 		'worldDate',
@@ -614,10 +626,28 @@ app.put('/pages/:id', requireDM, async (req, res) => {
 		'draft',
 	];
 	fields.forEach((field) => {
-		if (req.body[field] !== undefined) update[field] = req.body[field];
+		// Check if field exists in request body (even if undefined/null)
+		if (req.body.hasOwnProperty(field)) {
+			// If explicitly set to null or undefined, remove the field
+			if (req.body[field] === null || req.body[field] === undefined) {
+				unset[field] = '';
+			} else {
+				update[field] = req.body[field];
+			}
+		}
 	});
-	console.log('Page updated:', update);
-	const page = await Page.findByIdAndUpdate(id, update, { new: true });
+	
+	// Build the MongoDB update operation
+	const updateOperation = {};
+	if (Object.keys(update).length > 0) {
+		updateOperation.$set = update;
+	}
+	if (Object.keys(unset).length > 0) {
+		updateOperation.$unset = unset;
+	}
+	
+	console.log('Page updated:', update, 'Unset:', unset);
+	const page = await Page.findByIdAndUpdate(id, updateOperation, { new: true });
 	if (!page) return res.status(404).json({ error: 'Page not found' });
 
 	// After updating a page, propagate to linked events that opt into syncing
@@ -721,7 +751,7 @@ app.post('/upload', requireDM, upload.single('file'), async (req, res) => {
 	if (!file) return res.status(400).json({ error: 'No file uploaded' });
 
 	const url = `/uploads/${file.filename}`;
-	let thumbUrl = null;
+	let bannerThumbUrl = null;
 
 	// Generate thumbnail for images
 	try {
@@ -741,21 +771,21 @@ app.post('/upload', requireDM, upload.single('file'), async (req, res) => {
 			const thumbPath = path.join(UPLOADS_PATH, thumbFilename);
 
 			await sharp(file.path)
-				.resize(300, null, {
-					// 300px width, maintain aspect ratio
+				.resize(800, null, {
+					// 800px width, maintain aspect ratio
 					withoutEnlargement: true,
 					fit: 'inside',
 				})
 				.toFile(thumbPath);
 
-			thumbUrl = `/uploads/${thumbFilename}`;
+			bannerThumbUrl = `/uploads/${thumbFilename}`;
 		}
 	} catch (err) {
 		console.warn('Thumbnail generation failed:', err);
 		// Continue without thumbnail - not a critical error
 	}
 
-	res.json({ url, thumbUrl });
+	res.json({ url, bannerThumbUrl });
 });
 
 // Avvio server
@@ -863,7 +893,7 @@ app.get('/assets', async (req, res) => {
 app.post('/assets', requireDM, upload.single('file'), async (req, res) => {
 	try {
 		let url = null;
-		let thumbUrl = null;
+		let bannerThumbUrl = null;
 
 		if (req.file) {
 			url = `/uploads/${req.file.filename}`;
@@ -886,13 +916,13 @@ app.post('/assets', requireDM, upload.single('file'), async (req, res) => {
 					const thumbPath = path.join(UPLOADS_PATH, thumbFilename);
 
 					await sharp(req.file.path)
-						.resize(300, null, {
+						.resize(800, null, {
 							withoutEnlargement: true,
 							fit: 'inside',
 						})
 						.toFile(thumbPath);
 
-					thumbUrl = `/uploads/${thumbFilename}`;
+					bannerThumbUrl = `/uploads/${thumbFilename}`;
 				}
 			} catch (err) {
 				console.warn('Thumbnail generation failed:', err);
@@ -905,7 +935,7 @@ app.post('/assets', requireDM, upload.single('file'), async (req, res) => {
 		if (!url)
 			return res.status(400).json({ error: 'file or url is required' });
 
-		const asset = await Asset.create({ url, thumb_url: thumbUrl });
+		const asset = await Asset.create({ url, thumb_url: bannerThumbUrl });
 		res.json(asset);
 	} catch (err) {
 		console.error('POST /assets failed', err);
@@ -922,16 +952,16 @@ app.delete('/assets/:id', requireDM, async (req, res) => {
 
 		// Clear references to this asset in Events and Pages
 		const assetUrl = asset.url;
-		const assetThumbUrl = asset.thumb_url;
+		const assetbannerThumbUrl = asset.thumb_url;
 
 		// Update Events that reference this asset's URL or thumbnail
 		await Event.updateMany(
 			{
 				$or: [
 					{ bannerUrl: assetUrl },
-					{ bannerUrl: assetThumbUrl },
+					{ bannerUrl: assetbannerThumbUrl },
 					{ bannerThumbUrl: assetUrl },
-					{ bannerThumbUrl: assetThumbUrl },
+					{ bannerThumbUrl: assetbannerThumbUrl },
 				],
 			},
 			{
@@ -947,9 +977,9 @@ app.delete('/assets/:id', requireDM, async (req, res) => {
 			{
 				$or: [
 					{ bannerUrl: assetUrl },
-					{ bannerUrl: assetThumbUrl },
+					{ bannerUrl: assetbannerThumbUrl },
 					{ bannerThumbUrl: assetUrl },
-					{ bannerThumbUrl: assetThumbUrl },
+					{ bannerThumbUrl: assetbannerThumbUrl },
 				],
 			},
 			{
@@ -962,7 +992,7 @@ app.delete('/assets/:id', requireDM, async (req, res) => {
 
 		// Clear references in Page blocks (image blocks with url field)
 		await Page.updateMany(
-			{ 'blocks.url': { $in: [assetUrl, assetThumbUrl] } },
+			{ 'blocks.url': { $in: [assetUrl, assetbannerThumbUrl] } },
 			{
 				$set: {
 					'blocks.$[elem].url': null,
@@ -971,7 +1001,7 @@ app.delete('/assets/:id', requireDM, async (req, res) => {
 			{
 				arrayFilters: [
 					{
-						'elem.url': { $in: [assetUrl, assetThumbUrl] },
+						'elem.url': { $in: [assetUrl, assetbannerThumbUrl] },
 					},
 				],
 			}
@@ -1003,6 +1033,81 @@ app.delete('/assets/:id', requireDM, async (req, res) => {
 		res.json({ success: true });
 	} catch (err) {
 		console.error('DELETE /assets/:id failed', err);
+		res.status(500).json({ error: 'Internal error' });
+	}
+});
+
+// Update asset folder location
+app.patch('/assets/:id/move', requireDM, async (req, res) => {
+	try {
+		const { id } = req.params;
+		const { folderId } = req.body; // can be null to move to root
+
+		const asset = await Asset.findByIdAndUpdate(
+			id,
+			{ folderId: folderId || null },
+			{ new: true }
+		);
+		
+		if (!asset) return res.status(404).json({ error: 'Asset not found' });
+		
+		res.json(asset);
+	} catch (err) {
+		console.error('PATCH /assets/:id/move failed', err);
+		res.status(500).json({ error: 'Internal error' });
+	}
+});
+
+// -----------------------------------------------------------------------------
+// Asset Folders
+// -----------------------------------------------------------------------------
+
+// List all asset folders
+app.get('/asset-folders', async (req, res) => {
+	try {
+		const folders = await AssetFolder.find().sort({ createdAt: -1 });
+		res.json(folders);
+	} catch (err) {
+		console.error('GET /asset-folders failed', err);
+		res.status(500).json({ error: 'Internal error' });
+	}
+});
+
+// Create a new asset folder
+app.post('/asset-folders', requireDM, async (req, res) => {
+	try {
+		const { name } = req.body;
+		if (!name || !name.trim()) {
+			return res.status(400).json({ error: 'Folder name is required' });
+		}
+
+		const folder = await AssetFolder.create({ name: name.trim() });
+		res.json(folder);
+	} catch (err) {
+		console.error('POST /asset-folders failed', err);
+		res.status(500).json({ error: 'Internal error' });
+	}
+});
+
+// Delete an asset folder (only if empty)
+app.delete('/asset-folders/:id', requireDM, async (req, res) => {
+	try {
+		const { id } = req.params;
+		
+		// Check if folder contains any assets
+		const assetsInFolder = await Asset.countDocuments({ folderId: id });
+		if (assetsInFolder > 0) {
+			return res.status(400).json({ 
+				error: 'Cannot delete folder with assets. Move or delete assets first.' 
+			});
+		}
+
+		const folder = await AssetFolder.findByIdAndDelete(id);
+		if (!folder) return res.status(404).json({ error: 'Folder not found' });
+
+		res.json({ success: true });
+	} catch (err) {
+		console.error('DELETE /asset-folders/:id failed', err);
 		res.status(500).json({ error: 'Internal error' });
 	}
 });
@@ -1198,7 +1303,7 @@ app.post('/sync/campaign/preview', requireDM, async (req, res) => {
 				});
 		}
 
-		// 3) Parse out sections by date headers (DD.MM.YYYY format) and retain only the latest
+		// 3) Parse out sections by date headers (DD.MM.YYYY format)
 		const dateRegex = /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/;
 		const sections = [];
 		const lines = txt.split(/\r?\n/);
@@ -1221,171 +1326,202 @@ app.post('/sync/campaign/preview', requireDM, async (req, res) => {
 		}
 		if (currSection) sections.push(currSection);
 		
-	if (sections.length === 0) {
-		return res.json({
-			message: 'No date section found (looking for DD.MM.YYYY format)',
-			preview: null,
-		});
-	}
-
-	// Get the last date section from the file
-	const lastSection = sections[sections.length - 1];
-	console.log('Last section date:', lastSection.date);
-	
-	// Convert DD.MM.YYYY to DD/MM/YYYY for parsing
-	const dateForParsing = lastSection.date.replace(/\./g, '/');
-	console.log('Date for parsing:', dateForParsing);
-	const lastDate = parseDDMMYYYY(dateForParsing);
-	
-	if (!lastDate) {
-		return res.json({
-			message: `Could not parse the last date section: ${lastSection.date}`,
-			preview: null,
-		});
-	}
-
-	// Compare with latest campaign page
-	if (latestLocal && lastDate <= latestLocal) {
-		return res.json({
-			message: 'No newer section found (last section date is not newer than latest page)',
-			preview: null,
-		});
-	}
-
-	const chosen = lastSection;		const rawText = chosen.content.join('\n').trim();
-		const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-		let summary = rawText;
-
-		if (OPENAI_API_KEY && doSummarize) {
-			console.log('Summarizing session via OpenAI...');
-			try {
-				const targetWords = 520;
-				const maxTokens = Math.max(
-					800,
-					Math.min(6000, Math.ceil(targetWords * 2.5))
-				);
-				const headers = {
-					Authorization: `Bearer ${OPENAI_API_KEY}`,
-					'Content-Type': 'application/json',
-				};
-				if (process.env.OPENAI_ORG_ID)
-					headers['OpenAI-Organization'] = process.env.OPENAI_ORG_ID;
-				if (process.env.OPENAI_PROJECT_ID)
-					headers['OpenAI-Project'] = process.env.OPENAI_PROJECT_ID;
-
-				// Extract explicit dialogue candidates from notes to prevent invention
-				const extractDialogues = (src) => {
-					const lines = String(src).split(/\r?\n/);
-					const map = new Map([
-						['O:', 'Owen'],
-						['A:', 'Ardi'],
-						['F:', 'Farek'],
-						['BRUNO>', 'Bruno'],
-						['BRUNO:', 'Bruno'],
-						['OWEN:', 'Owen'],
-						['ARDI:', 'Ardi'],
-						['FAREK:', 'Farek'],
-						['LYSARA:', 'Lysara'],
-						['OBYRON:', 'Obyron'],
-						['RAIDAN:', 'Raidan'],
-					]);
-					const found = [];
-					for (const raw of lines) {
-						const line = raw.trim();
-						if (!line) continue;
-						let matched = false;
-						for (const [mk, name] of map.entries()) {
-							if (line.startsWith(mk)) {
-								let content = line.slice(mk.length).trim();
-								if (content)
-									found.push({
-										speaker: name,
-										text: content,
-									});
-								matched = true;
-								break;
-							}
-						}
-						if (matched) continue;
-						const m = line.match(
-							/^(Owen|Ardi|Farek|Bruno|Lysara|Obyron|Raidan)\s*:\s*(.+)$/i
-						);
-						if (m) {
-							found.push({
-								speaker:
-									m[1][0].toUpperCase() +
-									m[1].slice(1).toLowerCase(),
-								text: m[2].trim(),
-							});
-						}
-					}
-					const uniq = [];
-					const seen = new Set();
-					for (const d of found) {
-						const key = d.speaker + '|' + d.text;
-						if (seen.has(key)) continue;
-						seen.add(key);
-						uniq.push({
-							speaker: d.speaker,
-							text: d.text.slice(0, 200),
-						});
-					}
-					return uniq.slice(0, 12);
-				};
-				const allowed = extractDialogues(rawText);
-				const allowedList = allowed.length
-					? `\n\nUsa SOLO queste battute esplicite se vuoi inserire dialoghi (altrimenti ometti i dialoghi se non bastano):\n` +
-					  allowed.map((d) => `- ${d.speaker}: ${d.text}`).join('\n')
-					: '';
-
-				const resp = await fetch(
-					'https://api.openai.com/v1/chat/completions',
-					{
-						method: 'POST',
-						headers,
-						body: JSON.stringify({
-							model: 'gpt-4o-mini',
-							messages: [
-								{
-									role: 'system',
-									content: `Cronista D&D. Resoconto narrativo in Italiano, 4–7 paragrafi, stile evocativo. NON INVENTARE. Solo fatti/dialoghi dalle note. Battute tra "" con nome (O:→Owen, A:→Ardi, F:→Farek, BRUNO:→Bruno). No preamboli. ~${targetWords} parole.`,
-								},
-								{
-									role: 'user',
-									content: `Trasforma note in resoconto. SOLO dialoghi espliciti (O:→Owen, A:→Ardi, F:→Farek, BRUNO:→Bruno). NON INVENTARE.${allowedList}\n\n${rawText}`,
-								},
-							],
-							temperature: 0.7,
-							max_completion_tokens: maxTokens,
-						}),
-					}
-				);
-				const data = await resp.json();
-				const choice = data?.choices?.[0];
-				const finishReason = choice?.finish_reason;
-				const content =
-					choice?.message?.content?.trim() || choice?.text?.trim();
-
-				if (finishReason === 'length') {
-					console.warn(
-						`OpenAI response was truncated. Consider increasing max_completion_tokens (current: ${maxTokens})`
-					);
-				}
-
-				if (content) summary = content;
-			} catch (e) {
-				console.error('OpenAI call failed', e);
-			}
+		if (sections.length === 0) {
+			return res.json({
+				message: 'No date section found (looking for DD.MM.YYYY format)',
+				availableDates: [],
+			});
 		}
 
-		// Return preview data
+		// Filter out dates that already exist in the database
+		const existingDates = new Set(
+			pages
+				.filter(p => p.sessionDate)
+				.map(p => p.sessionDate.trim())
+		);
+
+		const availableSections = sections.filter(section => {
+			// Check if this date already exists in DB (as DD.MM.YYYY or DD/MM/YYYY)
+			const dateWithDots = section.date; // DD.MM.YYYY
+			const dateWithSlashes = section.date.replace(/\./g, '/'); // DD/MM/YYYY
+			return !existingDates.has(dateWithDots) && !existingDates.has(dateWithSlashes);
+		});
+
+		if (availableSections.length === 0) {
+			return res.json({
+				message: 'No new dates found (all dates from document already exist in database)',
+				availableDates: [],
+			});
+		}
+
+		// Return all available dates with their content
+		const availableDates = availableSections.map(section => ({
+			date: section.date, // DD.MM.YYYY format
+			content: section.content.join('\n').trim(),
+		}));
+
+		// Sort by date (most recent first)
+		availableDates.sort((a, b) => {
+			const dateA = parseDDMMYYYY(a.date.replace(/\./g, '/'));
+			const dateB = parseDDMMYYYY(b.date.replace(/\./g, '/'));
+			if (!dateA || !dateB) return 0;
+			return dateB.getTime() - dateA.getTime();
+		});
+
 		res.json({
-			preview: {
-				summary,
-				sessionDate: chosen.date,
-				suggestedTitle: `Session ${chosen.date}`,
-				rawText,
-			},
+			availableDates,
+			message: `Found ${availableDates.length} new session(s)`,
+		});
+	} catch (err) {
+		console.error(err);
+		res.status(500).json({ error: err.message || 'Server error' });
+	}
+});
+
+// -----------------------------------------------------------------------------
+// Sync Step 1.5: Summarize - Summarize selected date content with OpenAI
+// -----------------------------------------------------------------------------
+app.post('/sync/campaign/summarize', requireDM, async (req, res) => {
+	try {
+		const { rawText, sessionDate } = req.body || {};
+
+		if (!rawText) {
+			return res.status(400).json({ error: 'rawText is required' });
+		}
+
+		const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+		
+		if (!OPENAI_API_KEY) {
+			return res.status(400).json({ error: 'OpenAI API key not configured' });
+		}
+
+		console.log('Summarizing session via OpenAI...');
+		let summary = rawText;
+
+		try {
+			const targetWords = 520;
+			const maxTokens = Math.max(
+				800,
+				Math.min(6000, Math.ceil(targetWords * 2.5))
+			);
+			const headers = {
+				Authorization: `Bearer ${OPENAI_API_KEY}`,
+				'Content-Type': 'application/json',
+			};
+			if (process.env.OPENAI_ORG_ID)
+				headers['OpenAI-Organization'] = process.env.OPENAI_ORG_ID;
+			if (process.env.OPENAI_PROJECT_ID)
+				headers['OpenAI-Project'] = process.env.OPENAI_PROJECT_ID;
+
+			// Extract explicit dialogue candidates from notes to prevent invention
+			const extractDialogues = (src) => {
+				const lines = String(src).split(/\r?\n/);
+				const map = new Map([
+					['O:', 'Owen'],
+					['A:', 'Ardi'],
+					['F:', 'Farek'],
+					['BRUNO>', 'Bruno'],
+					['BRUNO:', 'Bruno'],
+					['OWEN:', 'Owen'],
+					['ARDI:', 'Ardi'],
+					['FAREK:', 'Farek'],
+					['LYSARA:', 'Lysara'],
+					['OBYRON:', 'Obyron'],
+					['RAIDAN:', 'Raidan'],
+				]);
+				const found = [];
+				for (const raw of lines) {
+					const line = raw.trim();
+					if (!line) continue;
+					let matched = false;
+					for (const [mk, name] of map.entries()) {
+						if (line.startsWith(mk)) {
+							let content = line.slice(mk.length).trim();
+							if (content)
+								found.push({
+									speaker: name,
+									text: content,
+								});
+							matched = true;
+							break;
+						}
+					}
+					if (matched) continue;
+					const m = line.match(
+						/^(Owen|Ardi|Farek|Bruno|Lysara|Obyron|Raidan)\s*:\s*(.+)$/i
+					);
+					if (m) {
+						found.push({
+							speaker:
+								m[1][0].toUpperCase() +
+								m[1].slice(1).toLowerCase(),
+							text: m[2].trim(),
+						});
+					}
+				}
+				const uniq = [];
+				const seen = new Set();
+				for (const d of found) {
+					const key = d.speaker + '|' + d.text;
+					if (seen.has(key)) continue;
+					seen.add(key);
+					uniq.push({
+						speaker: d.speaker,
+						text: d.text.slice(0, 200),
+					});
+				}
+				return uniq.slice(0, 12);
+			};
+			const allowed = extractDialogues(rawText);
+			const allowedList = allowed.length
+				? `\n\nUsa SOLO queste battute esplicite se vuoi inserire dialoghi (altrimenti ometti i dialoghi se non bastano):\n` +
+				  allowed.map((d) => `- ${d.speaker}: ${d.text}`).join('\n')
+				: '';
+
+			const resp = await fetch(
+				'https://api.openai.com/v1/chat/completions',
+				{
+					method: 'POST',
+					headers,
+					body: JSON.stringify({
+						model: 'gpt-4o-mini',
+						messages: [
+							{
+								role: 'system',
+								content: `Cronista D&D. Resoconto narrativo in Italiano, 4–7 paragrafi, stile evocativo. NON INVENTARE. Solo fatti/dialoghi dalle note. Battute tra "" con nome (O:→Owen, A:→Ardi, F:→Farek, BRUNO:→Bruno). No preamboli. ~${targetWords} parole.`,
+							},
+							{
+								role: 'user',
+								content: `Trasforma note in resoconto. SOLO dialoghi espliciti (O:→Owen, A:→Ardi, F:→Farek, BRUNO:→Bruno). NON INVENTARE.${allowedList}\n\n${rawText}`,
+							},
+						],
+						temperature: 0.7,
+						max_completion_tokens: maxTokens,
+					}),
+				}
+			);
+			const data = await resp.json();
+			const choice = data?.choices?.[0];
+			const finishReason = choice?.finish_reason;
+			const content =
+				choice?.message?.content?.trim() || choice?.text?.trim();
+
+			if (finishReason === 'length') {
+				console.warn(
+					`OpenAI response was truncated. Consider increasing max_completion_tokens (current: ${maxTokens})`
+				);
+			}
+
+			if (content) summary = content;
+		} catch (e) {
+			console.error('OpenAI call failed', e);
+			return res.status(500).json({ error: 'OpenAI summarization failed' });
+		}
+
+		res.json({
+			summary,
+			sessionDate,
+			suggestedTitle: sessionDate ? `Session ${sessionDate}` : 'Session',
 		});
 	} catch (err) {
 		console.error(err);

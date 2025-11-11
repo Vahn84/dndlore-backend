@@ -47,10 +47,42 @@ const pageSchema = new mongoose.Schema(
 			enum: ['place', 'history', 'myth', 'people', 'campaign'],
 			required: true,
 		},
+		// For place pages: specify if it's a region or city
+		placeType: {
+			type: String,
+			enum: ['region', 'city'],
+		},
+		// Map coordinates for place pages
+		coordinates: {
+			type: {
+				type: String,
+				enum: ['point', 'polygon'],
+			},
+			data: {
+				// For points (cities)
+				x: { type: Number }, // normalized 0-1
+				y: { type: Number }, // normalized 0-1
+				// For polygons (regions)
+				points: [
+					{
+						x: { type: Number },
+						y: { type: Number },
+						_id: false,
+					},
+				],
+			},
+			// Reference to parent region (for cities)
+			parentRegionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Page' },
+			// Styling for regions
+			borderColor: { type: String },
+			fillColor: { type: String },
+		},
 		// Optional banner image URL
 		bannerUrl: { type: String },
 		// Optional banner thumbnail URL (generated from bannerUrl if it's an uploaded image)
 		bannerThumbUrl: { type: String },
+		// Optional asset ID for city icon on map
+		assetId: { type: String },
 		// Array of content blocks
 		blocks: { type: [pageBlockSchema], default: [] },
 		// Real-world session date for campaign pages (DD/MM/YYYY)
@@ -120,9 +152,18 @@ const AssetSchema = new mongoose.Schema(
 	{
 		url: { type: String, required: true },
 		thumb_url: { type: String },
+		folderId: { type: mongoose.Schema.Types.ObjectId, ref: 'AssetFolder', default: null },
 		createdAt: { type: Date, default: Date.now },
 	},
 	{ collection: 'assets' }
+);
+
+const AssetFolderSchema = new mongoose.Schema(
+	{
+		name: { type: String, required: true },
+		createdAt: { type: Date, default: Date.now },
+	},
+	{ collection: 'assetfolders' }
 );
 
 export const User = mongoose.model('User', userSchema);
@@ -130,6 +171,7 @@ export const Group = mongoose.model('Group', groupSchema);
 export const Page = mongoose.model('Page', pageSchema);
 export const Event = mongoose.model('Event', eventSchema);
 export const Asset = mongoose.model('Asset', AssetSchema);
+export const AssetFolder = mongoose.model('AssetFolder', AssetFolderSchema);
 
 // Time system configuration stored as a single document. The config field
 // contains the full TimeSystemConfig object used by the frontend. If no
