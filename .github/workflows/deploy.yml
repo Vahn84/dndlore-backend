@@ -101,6 +101,8 @@ jobs:
                         -e GOOGLE_CLIENT_SECRET='${{ secrets.GOOGLE_CLIENT_SECRET }}' \
                         -e GOOGLE_CALLBACK_URL='${{ secrets.GOOGLE_CALLBACK_URL }}' \
                         -e DM_EMAIL='${{ secrets.DM_EMAIL }}' \
+                        -e DISCORD_BOT_TOKEN='${{ secrets.DISCORD_BOT_TOKEN }}' \
+                        -e DISCORD_GUILD_ID='${{ secrets.DISCORD_GUILD_ID }}' \
                         -e OPENAI_API_KEY='${{ secrets.OPENAI_API_KEY }}' \
                         -e EXTERNAL_API_KEY='${{ secrets.EXTERNAL_API_KEY }}' \
                         -v "$DEPLOY_DIR/uploads":/app/uploads \
