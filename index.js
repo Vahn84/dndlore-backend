@@ -62,7 +62,7 @@ app.use(
 		cookie: {
 			httpOnly: true,
 			secure: process.env.NODE_ENV === 'production',
-			maxAge: 24 * 60 * 60 * 1000,
+			maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
 			sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
 		},
 	})
@@ -1169,6 +1169,17 @@ app.post('/integrations/discord/events', requireAuth, async (req, res) => {
 		}
 
 		const { title, description, bannerUrl, dateTimeUtc, channelId, voiceChannelId, syncToCalendar, calendarId } = req.body;
+
+		console.log('Creating Discord event with params:', {
+			title,
+			description: description?.substring(0, 100),
+			bannerUrl,
+			dateTimeUtc,
+			channelId,
+			voiceChannelId,
+			syncToCalendar,
+			calendarId
+		});
 
 		if (!title) {
 			return res.status(400).json({ error: 'Event title is required' });

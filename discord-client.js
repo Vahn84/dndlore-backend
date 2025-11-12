@@ -1,4 +1,8 @@
 import { Client, GatewayIntentBits, GuildScheduledEventPrivacyLevel, GuildScheduledEventEntityType } from 'discord.js';
+import https from 'https';
+import http from 'http';
+import fs from 'fs';
+import path from 'path';
 
 // Bypass TLS certificate validation for public/free WiFi networks
 // Must be set before any HTTPS/WSS connections are made
@@ -189,35 +193,58 @@ class DiscordClient {
 				};
 			}
 
-			// Add image if provided - convert URL to buffer
+			// Add image if provided - convert to base64 data URI
 			if (image) {
 				try {
-					const imageUrl = image.startsWith('http') ? image : `${process.env.FRONTEND_URL || 'http://localhost:3000'}${image}`;
-					console.log('Fetching event image from:', imageUrl);
-					const https = require('https');
-					const http = require('http');
+					let imageBuffer;
+					let imageUrl = image;
 					
-					// Use https or http based on URL
-					const protocol = imageUrl.startsWith('https') ? https : http;
+					// If it's a relative /uploads/ path, read from file system directly
+					if (image.startsWith('/uploads/')) {
+						console.log('Reading event image from local file system:', image);
+						const filePath = path.join(process.cwd(), image);
+						imageBuffer = fs.readFileSync(filePath);
+					} else {
+						// Otherwise fetch from URL
+						imageUrl = image.startsWith('http') ? image : `${process.env.FRONTEND_URL || 'http://localhost:3000'}${image}`;
+						console.log('Fetching event image from URL:', imageUrl);
+						
+						// Use https or http based on URL
+						const protocol = imageUrl.startsWith('https') ? https : http;
+						
+						imageBuffer = await new Promise((resolve, reject) => {
+							protocol.get(imageUrl, (response) => {
+								if (response.statusCode !== 200) {
+									reject(new Error(`Failed to fetch image: ${response.statusCode}`));
+									return;
+								}
+								
+								const chunks = [];
+								response.on('data', (chunk) => chunks.push(chunk));
+								response.on('end', () => resolve(Buffer.concat(chunks)));
+								response.on('error', reject);
+							}).on('error', reject);
+						});
+					}
 					
-					const imageBuffer = await new Promise((resolve, reject) => {
-						protocol.get(imageUrl, (response) => {
-							if (response.statusCode !== 200) {
-								reject(new Error(`Failed to fetch image: ${response.statusCode}`));
-								return;
-							}
-							
-							const chunks = [];
-							response.on('data', (chunk) => chunks.push(chunk));
-							response.on('end', () => resolve(Buffer.concat(chunks)));
-							response.on('error', reject);
-						}).on('error', reject);
-					});
+					// Detect image type from URL/path extension
+					let mimeType = 'image/png';
+					if (image.match(/\.(jpg|jpeg)$/i)) {
+						mimeType = 'image/jpeg';
+					} else if (image.match(/\.webp$/i)) {
+						mimeType = 'image/webp';
+					} else if (image.match(/\.gif$/i)) {
+						mimeType = 'image/gif';
+					}
 					
-					eventOptions.image = imageBuffer;
-					console.log('Event image loaded successfully, size:', imageBuffer.length, 'bytes');
+					// Convert buffer to base64 data URI
+					const base64Image = imageBuffer.toString('base64');
+					const dataUri = `data:${mimeType};base64,${base64Image}`;
+					eventOptions.image = dataUri;
+					
+					console.log(`Event image converted to base64 (${mimeType}), size:`, imageBuffer.length, 'bytes');
 				} catch (imgErr) {
-					console.error('Error fetching event image:', imgErr.message);
+					console.error('Error processing event image:', imgErr.message);
 				}
 			}
 
