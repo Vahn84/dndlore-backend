@@ -652,7 +652,8 @@ app.get('/pages', async (req, res) => {
 		query.title = { $regex: q.trim(), $options: 'i' };
 	}
 	const lim = Math.min(100, Math.max(1, Number(limit) || 50));
-	const pages = await Page.find(query).limit(lim).sort({ updatedAt: -1 });
+	// Sort by order field first (ascending), then by updatedAt (descending) as fallback
+	const pages = await Page.find(query).limit(lim).sort({ order: 1, updatedAt: -1 });
 	console.log('Pages fetched', pages)
 	res.json(pages);
 });
@@ -862,6 +863,38 @@ app.delete('/pages/:id', requireDM, async (req, res) => {
 	// Unlink events referencing this page
 	await Event.updateMany({ pageId: id }, { $unset: { pageId: '' } });
 	res.json({ success: true });
+});
+
+// Update page order for a specific type (for drag-and-drop reordering)
+app.patch('/pages/reorder/:type', requireDM, async (req, res) => {
+	try {
+		const { type } = req.params;
+		const { pageIds } = req.body; // Array of page IDs in desired order
+		
+		if (!Array.isArray(pageIds)) {
+			return res.status(400).json({ error: 'pageIds must be an array' });
+		}
+
+		// Validate page type
+		const validTypes = ['place', 'history', 'myth', 'people', 'campaign'];
+		if (!validTypes.includes(type)) {
+			return res.status(400).json({ error: 'Invalid page type' });
+		}
+
+		// Update order field for each page
+		const updates = pageIds.map((pageId, index) => ({
+			updateOne: {
+				filter: { _id: pageId, type },
+				update: { $set: { order: index } },
+			},
+		}));
+
+		await Page.bulkWrite(updates);
+		res.json({ success: true, updated: pageIds.length });
+	} catch (err) {
+		console.error('Error updating page order:', err);
+		res.status(500).json({ error: 'Failed to update page order' });
+	}
 });
 
 // -----------------------------------------------------------------------------
@@ -1098,9 +1131,33 @@ app.get('/integrations/discord/channels', requireAuth, async (req, res) => {
 });
 
 /**
+ * GET /integrations/discord/voice-channels
+ * Fetch all voice channels from the configured Discord guild
+ */
+app.get('/integrations/discord/voice-channels', requireAuth, async (req, res) => {
+	try {
+		if (!discordClient.isAvailable()) {
+			return res.status(503).json({ 
+				error: 'Discord integration not available',
+				message: 'Discord bot is not connected. Check DISCORD_BOT_TOKEN and DISCORD_GUILD_ID environment variables.'
+			});
+		}
+
+		const voiceChannels = await discordClient.getVoiceChannels();
+		res.json({
+			guildId: process.env.DISCORD_GUILD_ID,
+			channels: voiceChannels
+		});
+	} catch (err) {
+		console.error('GET /integrations/discord/voice-channels failed', err);
+		res.status(500).json({ error: 'Failed to fetch Discord voice channels', details: err.message });
+	}
+});
+
+/**
  * POST /integrations/discord/events
  * Create a Discord scheduled event
- * Body: { title, bannerUrl?, dateTimeUtc, channelId }
+ * Body: { title, description?, bannerUrl?, dateTimeUtc, channelId, syncToCalendar?, calendarId? }
  */
 app.post('/integrations/discord/events', requireAuth, async (req, res) => {
 	try {
@@ -1111,7 +1168,7 @@ app.post('/integrations/discord/events', requireAuth, async (req, res) => {
 			});
 		}
 
-		const { title, bannerUrl, dateTimeUtc, channelId, syncToCalendar, calendarId } = req.body;
+		const { title, description, bannerUrl, dateTimeUtc, channelId, voiceChannelId, syncToCalendar, calendarId } = req.body;
 
 		if (!title) {
 			return res.status(400).json({ error: 'Event title is required' });
@@ -1129,18 +1186,31 @@ app.post('/integrations/discord/events', requireAuth, async (req, res) => {
 		// Create Discord scheduled event
 		const discordEvent = await discordClient.createScheduledEvent({
 			name: title,
-			description: `D&D Lore event: ${title}`,
+			description: description || `D&D Lore event: ${title}`,
 			scheduledStartTime,
-			channelId,
+			voiceChannelId: voiceChannelId || null,
 			image: bannerUrl,
 		});
+
+		// Send a message to the selected channel with the event link
+		if (discordEvent && discordEvent.url && channelId) {
+			try {
+				await discordClient.sendMessageToChannel(
+					channelId,
+					`📅 **New Event Created:** ${title}\n${discordEvent.url}`
+				);
+			} catch (msgErr) {
+				console.error('Failed to send message to channel after event creation:', msgErr);
+				// Don't fail the whole request if message send fails
+			}
+		}
 
 		let calendarEvent = null;
 
 		// Sync to Google Calendar if requested and user has valid token
 		if (syncToCalendar) {
 			try {
-				const user = await User.findById(req.user.userId);
+				const user = await User.findById(req.user.id);
 				
 				if (!user || !user.googleAccessToken) {
 					console.warn('User has no Google Calendar token, skipping sync');
@@ -1164,11 +1234,11 @@ app.post('/integrations/discord/events', requireAuth, async (req, res) => {
 					
 					if (accessToken) {
 						// Create event in Google Calendar
-						const endTime = new Date(scheduledStartTime.getTime() + 2 * 60 * 60 * 1000); // +2 hours
+						const endTime = new Date(scheduledStartTime.getTime() + 3 * 60 * 60 * 1000); // +3 hours
 						
 						const calendarEventData = {
 							summary: title,
-							description: `D&D Lore Discord event: ${title}`,
+							description: description || `D&D Lore Discord event: ${title}`,
 							start: {
 								dateTime: scheduledStartTime.toISOString(),
 								timeZone: 'UTC',

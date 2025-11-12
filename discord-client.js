@@ -114,13 +114,38 @@ class DiscordClient {
 	}
 
 	/**
+	 * Fetch all voice channels in the configured guild
+	 * @returns {Promise<Array<{id: string, name: string}>>}
+	 */
+	async getVoiceChannels() {
+		try {
+			const guild = await this.getGuild();
+			const channels = await guild.channels.fetch();
+
+			// Filter to voice channels only (type 2 = GUILD_VOICE)
+			const voiceChannels = channels
+				.filter((channel) => channel.type === 2)
+				.map((channel) => ({
+					id: channel.id,
+					name: channel.name,
+				}))
+				.sort((a, b) => a.name.localeCompare(b.name));
+
+			return voiceChannels;
+		} catch (error) {
+			console.error('Failed to fetch Discord voice channels:', error);
+			throw error;
+		}
+	}
+
+	/**
 	 * Create a scheduled event in Discord
 	 * @param {Object} options
 	 * @param {string} options.name - Event name
 	 * @param {string} options.description - Event description
 	 * @param {Date} options.scheduledStartTime - When the event starts
 	 * @param {Date} [options.scheduledEndTime] - When the event ends (optional, defaults to +2 hours)
-	 * @param {string} options.channelId - Voice/Stage channel ID (or null for external)
+	 * @param {string} [options.voiceChannelId] - Voice/Stage channel ID for the event location
 	 * @param {string} [options.image] - Event cover image URL (optional)
 	 * @returns {Promise<Object>} Created event object
 	 */
@@ -132,8 +157,8 @@ class DiscordClient {
 				name,
 				description = '',
 				scheduledStartTime,
-				scheduledEndTime = new Date(scheduledStartTime.getTime() + 2 * 60 * 60 * 1000), // +2 hours default
-				channelId,
+				scheduledEndTime = new Date(scheduledStartTime.getTime() + 3 * 60 * 60 * 1000), // +3 hours default
+				voiceChannelId,
 				image,
 			} = options;
 
@@ -151,17 +176,49 @@ class DiscordClient {
 				scheduledStartTime,
 				scheduledEndTime,
 				privacyLevel: GuildScheduledEventPrivacyLevel.GuildOnly,
-				entityType: GuildScheduledEventEntityType.External, // External event (no voice channel required)
-				entityMetadata: {
-					location: channelId ? `#${channelId}` : 'TBD', // Optional location text
-				},
 			};
 
-			// Add image if provided (must be base64 or buffer)
+			// If voice channel is provided, set it as voice event, otherwise external
+			if (voiceChannelId) {
+				eventOptions.entityType = GuildScheduledEventEntityType.Voice;
+				eventOptions.channel = voiceChannelId;
+			} else {
+				eventOptions.entityType = GuildScheduledEventEntityType.External;
+				eventOptions.entityMetadata = {
+					location: 'External',
+				};
+			}
+
+			// Add image if provided - convert URL to buffer
 			if (image) {
-				// If image is a URL, we'd need to fetch and convert to buffer
-				// For now, we'll skip it - Discord API requires base64/buffer format
-				console.log('Event image provided but not yet implemented:', image);
+				try {
+					const imageUrl = image.startsWith('http') ? image : `${process.env.FRONTEND_URL || 'http://localhost:3000'}${image}`;
+					console.log('Fetching event image from:', imageUrl);
+					const https = require('https');
+					const http = require('http');
+					
+					// Use https or http based on URL
+					const protocol = imageUrl.startsWith('https') ? https : http;
+					
+					const imageBuffer = await new Promise((resolve, reject) => {
+						protocol.get(imageUrl, (response) => {
+							if (response.statusCode !== 200) {
+								reject(new Error(`Failed to fetch image: ${response.statusCode}`));
+								return;
+							}
+							
+							const chunks = [];
+							response.on('data', (chunk) => chunks.push(chunk));
+							response.on('end', () => resolve(Buffer.concat(chunks)));
+							response.on('error', reject);
+						}).on('error', reject);
+					});
+					
+					eventOptions.image = imageBuffer;
+					console.log('Event image loaded successfully, size:', imageBuffer.length, 'bytes');
+				} catch (imgErr) {
+					console.error('Error fetching event image:', imgErr.message);
+				}
 			}
 
 			const event = await guild.scheduledEvents.create(eventOptions);
@@ -179,6 +236,28 @@ class DiscordClient {
 		} catch (error) {
 			console.error('Failed to create Discord scheduled event:', error);
 			throw error;
+		}
+	}
+
+	/**
+	 * Send a plain text message to a guild text channel
+	 * @param {string} channelId
+	 * @param {string} content
+	 */
+	async sendMessageToChannel(channelId, content) {
+		try {
+			if (!this.ready || !this.client) {
+				throw new Error('Discord bot not ready');
+			}
+			const ch = await this.client.channels.fetch(channelId);
+			if (!ch || typeof ch.send !== 'function') {
+				throw new Error('Channel not found or not a text channel');
+			}
+			await ch.send({ content });
+			return true;
+		} catch (err) {
+			console.error('Failed to send message to Discord channel:', err);
+			throw err;
 		}
 	}
 

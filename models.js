@@ -98,6 +98,8 @@ const pageSchema = new mongoose.Schema(
 		hidden: { type: Boolean, default: false },
 		// Draft flag: if true, the page is not published
 		draft: { type: Boolean, default: false },
+		// Manual ordering for display within the same type (lower numbers appear first)
+		order: { type: Number, default: 0 },
 	},
 	{ timestamps: true }
 );
