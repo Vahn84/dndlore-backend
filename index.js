@@ -12,6 +12,7 @@ import fs from 'fs';
 import path from 'path';
 import mongoose from 'mongoose';
 import { User, Group, Page, Event, TimeSystem, Asset, AssetFolder } from './models.js';
+import discordClient from './discord-client.js';
 
 // Carica variabili d'ambiente con valori di default
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:3000';
@@ -23,8 +24,16 @@ const JWT_SECRET = process.env.JWT_SECRET || 'jwtsecret';
 const MONGO_URI =
 	process.env.MONGO_URI ||
 	'mongodb+srv://fabiocingolani84_db_user:J4myJn6z59xHGXc@dndlore.njjnky5.mongodb.net/data?appName=DndLore';
+
+// MongoDB connection options - allow self-signed certificates on public/free WiFi
+const mongoOptions = {
+	tls: true,
+	tlsAllowInvalidCertificates: process.env.NODE_ENV === 'development' || process.env.ALLOW_INVALID_CERTS === 'true',
+	tlsAllowInvalidHostnames: process.env.NODE_ENV === 'development' || process.env.ALLOW_INVALID_CERTS === 'true',
+};
+
 mongoose
-	.connect(MONGO_URI)
+	.connect(MONGO_URI, mongoOptions)
 	.then(() => console.log('Connected to MongoDB'))
 	.catch((err) => console.error('MongoDB connection error', err));
 
@@ -198,6 +207,85 @@ function requireDM(req, res, next) {
 	});
 }
 
+// Helper function to format a date using the time system configuration
+function formatEventDate(tsConfig, eraId, year, monthIndex, day) {
+	console.log('formatEventDate called with:', { eraId, year, monthIndex, day, hasConfig: !!tsConfig });
+	if (!tsConfig || year == null) {
+		console.log('formatEventDate returning empty: no config or year');
+		return '';
+	}
+	
+	const era = tsConfig.eras?.find(e => e.id === eraId) || tsConfig.eras?.[0];
+	const eraAbbr = era?.abbreviation || '';
+	console.log('Era lookup:', { eraId, foundEra: era?.id, abbreviation: eraAbbr, allEras: tsConfig.eras?.map(e => ({ id: e.id, abbr: e.abbreviation })) });
+	console.log('Date formats:', tsConfig.dateFormats);
+	
+	// If only year is provided
+	if (monthIndex == null || monthIndex < 0) {
+		const format = tsConfig.dateFormats?.year || 'YYYY [E]';
+		let result = format
+			.replace(/YYYY/g, String(year))
+			.replace(/\[E\]/g, eraAbbr);
+		
+		// Also replace standalone E (not in brackets) for backwards compatibility
+		result = result.replace(/\bE\b/g, eraAbbr).trim();
+		
+		console.log('formatEventDate (year only) result:', result);
+		return result;
+	}
+	
+	const month = tsConfig.months?.[monthIndex];
+	const monthName = month?.name || '';
+	const monthNumber = monthIndex + 1;
+	
+	// If year + month
+	if (day == null || day <= 0) {
+		const format = tsConfig.dateFormats?.yearMonth || 'MMMM YYYY, [E]';
+		let result = format
+			.replace(/YYYY/g, String(year))
+			.replace(/MMMM/g, monthName)
+			.replace(/MM/g, String(monthNumber).padStart(2, '0'))
+			.replace(/M/g, String(monthNumber))
+			.replace(/\[E\]/g, eraAbbr);
+		
+		// Also replace standalone E (not in brackets) for backwards compatibility
+		result = result.replace(/\bE\b/g, eraAbbr).trim();
+		
+		console.log('formatEventDate (year+month) result:', result);
+		return result;
+	}
+	
+	// Year + month + day
+	const format = tsConfig.dateFormats?.yearMonthDay || 'D^ MMMM YYYY, [E]';
+	console.log('Using format string:', format);
+	const ordinal = (n) => {
+		const mod100 = n % 100;
+		if (mod100 >= 11 && mod100 <= 13) return `${n}th`;
+		switch (n % 10) {
+			case 1: return `${n}st`;
+			case 2: return `${n}nd`;
+			case 3: return `${n}rd`;
+			default: return `${n}th`;
+		}
+	};
+	
+	let result = format
+		.replace(/YYYY/g, String(year))
+		.replace(/MMMM/g, monthName)
+		.replace(/MM/g, String(monthNumber).padStart(2, '0'))
+		.replace(/M/g, String(monthNumber))
+		.replace(/D\^/g, ordinal(day))
+		.replace(/DD/g, String(day).padStart(2, '0'))
+		.replace(/D/g, String(day))
+		.replace(/\[E\]/g, eraAbbr);
+	
+	// Also replace standalone E (not in brackets) for backwards compatibility
+	result = result.replace(/\bE\b/g, eraAbbr).trim();
+	
+	console.log('formatEventDate (full date) result:', result);
+	return result;
+}
+
 // Endpoint login locale
 app.post('/login', async (req, res) => {
 	const { username, password } = req.body;
@@ -222,6 +310,8 @@ app.get(
 			'profile',
 			'email',
 			'https://www.googleapis.com/auth/documents.readonly',
+			'https://www.googleapis.com/auth/calendar.readonly',
+			'https://www.googleapis.com/auth/calendar.events',
 		],
 		accessType: 'offline',
 		prompt: 'consent',
@@ -647,16 +737,40 @@ app.put('/pages/:id', requireDM, async (req, res) => {
 	}
 	
 	console.log('Page updated:', update, 'Unset:', unset);
+	if (update.draft === true) {
+		console.log(`Page ${id} is being unpublished (draft=true)`);
+	}
 	const page = await Page.findByIdAndUpdate(id, updateOperation, { new: true });
 	if (!page) return res.status(404).json({ error: 'Page not found' });
 
 	// After updating a page, propagate to linked events that opt into syncing
 	try {
 		const linkedEvents = await Event.find({ pageId: id });
-		for (const ev of linkedEvents) {
-			if (!ev.linkSync) continue; // Skip if sync is disabled
+		console.log(`Found ${linkedEvents.length} linked events for page ${id}`);
+		
+		// Fetch time system once for formatting dates
+		const ts = await TimeSystem.findOne();
+		const tsConfig = ts?.config || null;
 
+		for (const ev of linkedEvents) {
 			let changed = false;
+			
+			// If unpublishing (draft=true), hide the event (regardless of linkSync)
+			if (update.draft === true && !ev.hidden) {
+				ev.hidden = true;
+				changed = true;
+				console.log(`Hiding event ${ev._id} (${ev.title}) linked to unpublished page ${id}`);
+			}
+			
+			// Only sync other fields if linkSync is enabled
+			if (!ev.linkSync) {
+				// Still save if we changed hidden status
+				if (changed) {
+					await ev.save();
+					console.log(`Saved hidden status for event ${ev._id}`);
+				}
+				continue;
+			}
 			// Sync title
 			if (page.title && ev.title !== page.title) {
 				ev.title = page.title;
@@ -698,7 +812,11 @@ app.put('/pages/:id', requireDM, async (req, res) => {
 					ev.endMonthIndex = null;
 					ev.endDay = null;
 					ev.endDate = '';
-					// Do not force a formatted startDate string; UI derives it
+					
+					// Format startDate string using time system if available
+					if (tsConfig) {
+						ev.startDate = formatEventDate(tsConfig, nextEra, nextYear, nextMonth, nextDay);
+					}
 					changed = true;
 				}
 			} else if (
@@ -725,7 +843,10 @@ app.put('/pages/:id', requireDM, async (req, res) => {
 					changed = true;
 				}
 			}
-			if (changed) await ev.save();
+			if (changed) {
+				await ev.save();
+				console.log(`Event ${ev._id} synced. startDate: "${ev.startDate}", startYear: ${ev.startYear}, startMonthIndex: ${ev.startMonthIndex}, startDay: ${ev.startDay}`);
+			}
 		}
 	} catch (propErr) {
 		console.warn('Failed to propagate page changes to events:', propErr);
@@ -789,8 +910,15 @@ app.post('/upload', requireDM, upload.single('file'), async (req, res) => {
 });
 
 // Avvio server
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
 	console.log(`Backend listening on port ${PORT}`);
+	
+	// Initialize Discord bot (non-blocking)
+	try {
+		await discordClient.connect();
+	} catch (error) {
+		console.error('Discord bot initialization failed:', error);
+	}
 });
 
 // -----------------------------------------------------------------------------
@@ -873,6 +1001,226 @@ app.put('/time-system', requireDM, async (req, res) => {
 		await ts.save();
 	}
 	res.json(ts.config);
+});
+
+// -----------------------------------------------------------------------------
+// Discord Integration
+// -----------------------------------------------------------------------------
+/**
+ * GET /integrations/google/calendars
+ * Fetch user's Google Calendar list
+ */
+app.get('/integrations/google/calendars', requireAuth, async (req, res) => {
+	try {
+		// JWT payload stores user id as `id` (see /auth/google/callback), not `userId`
+		const user = await User.findById(req.user.id);
+		
+		if (!user || !user.googleAccessToken) {
+			return res.status(401).json({ 
+				error: 'Not connected to Google Calendar',
+				message: 'Please connect your Google account first.'
+			});
+		}
+		
+		// Check if token is expired
+		const now = new Date();
+		const tokenExpired = user.googleTokenExpiry && user.googleTokenExpiry < now;
+		
+		let accessToken = user.googleAccessToken;
+		
+		if (tokenExpired && user.googleRefreshToken) {
+			console.log('Google token expired, refreshing...');
+			const refreshed = await refreshGoogleToken(user.googleRefreshToken);
+			if (refreshed) {
+				accessToken = refreshed.accessToken;
+				user.googleAccessToken = refreshed.accessToken;
+				user.googleTokenExpiry = new Date(Date.now() + refreshed.expiresIn * 1000);
+				await user.save();
+			} else {
+				return res.status(401).json({ error: 'Failed to refresh Google token' });
+			}
+		}
+		
+		// Fetch calendar list from Google
+		const calResponse = await fetch(
+			'https://www.googleapis.com/calendar/v3/users/me/calendarList',
+			{
+				method: 'GET',
+				headers: {
+					Authorization: `Bearer ${accessToken}`,
+				},
+			}
+		);
+		
+		if (!calResponse.ok) {
+			const errorText = await calResponse.text();
+			console.error('Failed to fetch Google calendars:', errorText);
+			return res.status(calResponse.status).json({ error: 'Failed to fetch calendars' });
+		}
+		
+		const data = await calResponse.json();
+		
+		// Return simplified calendar list
+		const calendars = data.items.map(cal => ({
+			id: cal.id,
+			name: cal.summary,
+			primary: cal.primary || false,
+			backgroundColor: cal.backgroundColor,
+			accessRole: cal.accessRole,
+		}));
+		
+		res.json(calendars);
+	} catch (err) {
+		console.error('GET /integrations/google/calendars failed', err);
+		res.status(500).json({ error: 'Failed to fetch Google calendars', details: err.message });
+	}
+});
+
+/**
+ * GET /integrations/discord/channels
+ * Fetch all text channels from the configured Discord guild
+ */
+app.get('/integrations/discord/channels', requireAuth, async (req, res) => {
+	try {
+		if (!discordClient.isAvailable()) {
+			return res.status(503).json({ 
+				error: 'Discord integration not available',
+				message: 'Discord bot is not connected. Check DISCORD_BOT_TOKEN and DISCORD_GUILD_ID environment variables.'
+			});
+		}
+
+		const channels = await discordClient.getTextChannels();
+		res.json(channels);
+	} catch (err) {
+		console.error('GET /integrations/discord/channels failed', err);
+		res.status(500).json({ error: 'Failed to fetch Discord channels', details: err.message });
+	}
+});
+
+/**
+ * POST /integrations/discord/events
+ * Create a Discord scheduled event
+ * Body: { title, bannerUrl?, dateTimeUtc, channelId }
+ */
+app.post('/integrations/discord/events', requireAuth, async (req, res) => {
+	try {
+		if (!discordClient.isAvailable()) {
+			return res.status(503).json({ 
+				error: 'Discord integration not available',
+				message: 'Discord bot is not connected. Check DISCORD_BOT_TOKEN and DISCORD_GUILD_ID environment variables.'
+			});
+		}
+
+		const { title, bannerUrl, dateTimeUtc, channelId, syncToCalendar, calendarId } = req.body;
+
+		if (!title) {
+			return res.status(400).json({ error: 'Event title is required' });
+		}
+
+		if (!dateTimeUtc) {
+			return res.status(400).json({ error: 'Event date/time is required' });
+		}
+
+		const scheduledStartTime = new Date(dateTimeUtc);
+		if (isNaN(scheduledStartTime.getTime())) {
+			return res.status(400).json({ error: 'Invalid date format' });
+		}
+
+		// Create Discord scheduled event
+		const discordEvent = await discordClient.createScheduledEvent({
+			name: title,
+			description: `D&D Lore event: ${title}`,
+			scheduledStartTime,
+			channelId,
+			image: bannerUrl,
+		});
+
+		let calendarEvent = null;
+
+		// Sync to Google Calendar if requested and user has valid token
+		if (syncToCalendar) {
+			try {
+				const user = await User.findById(req.user.userId);
+				
+				if (!user || !user.googleAccessToken) {
+					console.warn('User has no Google Calendar token, skipping sync');
+				} else {
+					// Check if token is expired
+					const now = new Date();
+					const tokenExpired = user.googleTokenExpiry && user.googleTokenExpiry < now;
+					
+					let accessToken = user.googleAccessToken;
+					
+					if (tokenExpired && user.googleRefreshToken) {
+						console.log('Google token expired, refreshing...');
+						const refreshed = await refreshGoogleToken(user.googleRefreshToken);
+						if (refreshed) {
+							accessToken = refreshed.accessToken;
+							user.googleAccessToken = refreshed.accessToken;
+							user.googleTokenExpiry = new Date(Date.now() + refreshed.expiresIn * 1000);
+							await user.save();
+						}
+					}
+					
+					if (accessToken) {
+						// Create event in Google Calendar
+						const endTime = new Date(scheduledStartTime.getTime() + 2 * 60 * 60 * 1000); // +2 hours
+						
+						const calendarEventData = {
+							summary: title,
+							description: `D&D Lore Discord event: ${title}`,
+							start: {
+								dateTime: scheduledStartTime.toISOString(),
+								timeZone: 'UTC',
+							},
+							end: {
+								dateTime: endTime.toISOString(),
+								timeZone: 'UTC',
+							},
+						};
+						
+						// Use specified calendar or default to primary
+						const targetCalendar = calendarId || 'primary';
+						
+						const calResponse = await fetch(
+							`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(targetCalendar)}/events`,
+							{
+								method: 'POST',
+								headers: {
+									Authorization: `Bearer ${accessToken}`,
+									'Content-Type': 'application/json',
+								},
+								body: JSON.stringify(calendarEventData),
+							}
+						);
+						
+						if (calResponse.ok) {
+							calendarEvent = await calResponse.json();
+							console.log('Google Calendar event created:', calendarEvent.id);
+						} else {
+							const errorText = await calResponse.text();
+							console.error('Failed to create Google Calendar event:', errorText);
+						}
+					}
+				}
+			} catch (calErr) {
+				console.error('Google Calendar sync error:', calErr);
+				// Don't fail the whole request if calendar sync fails
+			}
+		}
+
+		res.json({
+			success: true,
+			discordEvent,
+			calendarEvent,
+			message: calendarEvent 
+				? 'Discord event created and synced to Google Calendar'
+				: 'Discord event created successfully',
+		});
+	} catch (err) {
+		console.error('POST /integrations/discord/events failed', err);
+		res.status(500).json({ error: 'Failed to create Discord event', details: err.message });
+	}
 });
 
 // -----------------------------------------------------------------------------
@@ -1603,9 +1951,22 @@ app.post('/sync/campaign/create', requireDM, async (req, res) => {
 					startMonthIndex: worldDate.monthIndex ? Number(worldDate.monthIndex) : null,
 					startDay: worldDate.day ? Number(worldDate.day) : null,
 				};
+				
+				// Format startDate string using time system if available
+				const ts = await TimeSystem.findOne();
+				const tsConfig = ts?.config || null;
+				if (tsConfig && eventDateFields.startYear != null) {
+					eventDateFields.startDate = formatEventDate(
+						tsConfig,
+						eventDateFields.startEraId,
+						eventDateFields.startYear,
+						eventDateFields.startMonthIndex,
+						eventDateFields.startDay
+					);
+				}
 			}
 			
-			console.log('Creating event with:', { title: page.title, type: 'campaign', groupId: campaignGroup._id, pageId: page._id, hidden: true, linkSync: true, order, ...eventDateFields });
+			console.log('Creating event with:', { title: page.title, type: 'campaign', groupId: campaignGroup._id, pageId: page._id, hidden: true, linkSync: true, order, detailLevel: 'Day', ...eventDateFields });
 			createdEvent = await Event.create({
 				title: page.title,
 				type: 'campaign',
@@ -1613,7 +1974,9 @@ app.post('/sync/campaign/create', requireDM, async (req, res) => {
 				pageId: page._id,
 				hidden: true,
 				linkSync: true,
+				bannerUrl: bannerUrl || '',
 				order,
+				detailLevel: 'Day',
 				...eventDateFields,
 			});
 			console.log('Event created successfully:', createdEvent._id);
