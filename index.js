@@ -1323,6 +1323,10 @@ app.post('/assets', requireDM, upload.single('file'), async (req, res) => {
 	try {
 		let url = null;
 		let bannerThumbUrl = null;
+		const folderId =
+			req.body && req.body.folderId
+				? req.body.folderId || null
+				: null;
 
 		if (req.file) {
 			url = `/uploads/${req.file.filename}`;
@@ -1364,7 +1368,11 @@ app.post('/assets', requireDM, upload.single('file'), async (req, res) => {
 		if (!url)
 			return res.status(400).json({ error: 'file or url is required' });
 
-		const asset = await Asset.create({ url, thumb_url: bannerThumbUrl });
+		const asset = await Asset.create({
+			url,
+			thumb_url: bannerThumbUrl,
+			folderId,
+		});
 		res.json(asset);
 	} catch (err) {
 		console.error('POST /assets failed', err);
