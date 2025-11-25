@@ -1,0 +1,120 @@
+name: Deploy Backend to Synology NAS
+
+on:
+    push:
+        branches:
+            - master
+    workflow_dispatch:
+
+permissions:
+    contents: read
+    packages: write
+
+jobs:
+    build-and-deploy:
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v3
+
+            - name: Derive lowercase owner for GHCR
+              run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
+
+            - name: Connect to Tailscale
+              uses: tailscale/github-action@v2
+              with:
+                  authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
+
+            - name: Log in to GitHub Container Registry
+              uses: docker/login-action@v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Build and push Backend image
+              uses: docker/build-push-action@v5
+              with:
+                  context: .
+                  push: true
+                  tags: |
+                      ghcr.io/${{ env.OWNER_LC }}/dndlore-backend:latest
+                      ghcr.io/${{ env.OWNER_LC }}/dndlore-backend:${{ github.sha }}
+                  cache-from: type=gha
+                  cache-to: type=gha,mode=max
+
+            - name: Deploy backend to NAS
+              uses: appleboy/ssh-action@v1.0.0
+              with:
+                  host: ${{ secrets.NAS_HOST }}
+                  username: ${{ secrets.NAS_USERNAME }}
+                  key: ${{ secrets.NAS_SSH_KEY }}
+                  port: ${{ secrets.NAS_SSH_PORT || 22 }}
+                  script: |
+                      set -e
+                      export PATH="/usr/local/bin:/usr/bin:/bin:/usr/syno/bin:$PATH"
+
+                      DEPLOY_DIR="${{ secrets.NAS_DEPLOY_DIR }}"
+                      if [ -z "$DEPLOY_DIR" ]; then DEPLOY_DIR="$HOME/dndlore"; fi
+                      mkdir -p "$DEPLOY_DIR"
+                      cd "$DEPLOY_DIR"
+
+                      # Create uploads directory if it doesn't exist (ensure persistence)
+                      mkdir -p "$DEPLOY_DIR/uploads"
+
+                      # Create network if it doesn't exist
+                      docker network create dndlore-network 2>/dev/null || true
+
+                      # Login to GitHub Container Registry
+                      echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+                      # Pull latest backend image
+                      docker pull ghcr.io/${{ env.OWNER_LC }}/dndlore-backend:latest
+
+                      # Stop and remove old backend container if it exists (avoid noisy errors)
+                      CID=$(docker ps -aq -f name=^dndlore-backend$)
+                      if [ -n "$CID" ]; then
+                        docker stop dndlore-backend
+                        docker rm dndlore-backend
+                      else
+                        echo "No existing dndlore-backend container to stop/remove"
+                      fi
+
+                      # Determine backend port (default to 10101 if not set)
+                      PORT="${{ secrets.BACKEND_PORT }}"
+                      if [ -z "$PORT" ]; then PORT=10101; echo "BACKEND_PORT not set; defaulting to $PORT"; else echo "Using BACKEND_PORT=$PORT"; fi
+
+                      # Start new backend container with host network to fix Alpine DNS/SRV issues
+                      # Host network shares the NAS's DNS resolvers which work correctly
+                      docker run -d --name dndlore-backend --restart unless-stopped \
+                        --network host \
+                        -e NODE_ENV=production -e PORT="$PORT" \
+                        -e FRONTEND_ORIGIN='${{ secrets.FRONTEND_ORIGIN }}' \
+                        -e MONGO_URI='${{ secrets.MONGO_URI }}' \
+                        -e SESSION_SECRET='${{ secrets.SESSION_SECRET }}' \
+                        -e JWT_SECRET='${{ secrets.JWT_SECRET }}' \
+                        -e GOOGLE_CLIENT_ID='${{ secrets.GOOGLE_CLIENT_ID }}' \
+                        -e GOOGLE_CLIENT_SECRET='${{ secrets.GOOGLE_CLIENT_SECRET }}' \
+                        -e GOOGLE_CALLBACK_URL='${{ secrets.GOOGLE_CALLBACK_URL }}' \
+                        -e DM_EMAIL='${{ secrets.DM_EMAIL }}' \
+                        -e DISCORD_BOT_TOKEN='${{ secrets.DISCORD_BOT_TOKEN }}' \
+                        -e DISCORD_GUILD_ID='${{ secrets.DISCORD_GUILD_ID }}' \
+                        -e OPENAI_API_KEY='${{ secrets.OPENAI_API_KEY }}' \
+                        -e EXTERNAL_API_KEY='${{ secrets.EXTERNAL_API_KEY }}' \
+                        -v "$DEPLOY_DIR/uploads":/app/uploads \
+                        ghcr.io/${{ env.OWNER_LC }}/dndlore-backend:latest
+
+                      # Quick post-deploy checks
+                      echo "Deployed containers:" && docker ps --filter name=dndlore-backend --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+                      echo "Backend local health check on port $PORT:" \
+                        && (curl -sS -o /dev/null -w 'HTTP %{http_code}\n' "http://127.0.0.1:$PORT/health" || true)
+
+                      # Clean up old images
+                      docker image prune -af
+
+                      echo "Backend deployment completed successfully!"
+                      docker ps | grep dndlore-backend

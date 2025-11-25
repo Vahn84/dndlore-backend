@@ -1,0 +1,27 @@
+{
+  "name": "dndlore-backend-js",
+  "version": "1.0.0",
+  "description": "Backend JavaScript per la replica di DnD Lore",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "seed": "node seed.js",
+    "init:env": "node scripts/configure-env.js"
+  },
+  "dependencies": {
+    "body-parser": "^1.20.2",
+    "cors": "^2.8.5",
+    "discord.js": "^14.24.2",
+    "dotenv": "^16.4.5",
+    "express": "^4.18.2",
+    "express-session": "^1.17.3",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^7.5.0",
+    "multer": "^2.0.2",
+    "passport": "^0.7.0",
+    "passport-google-oauth20": "^2.0.0",
+    "sharp": "^0.34.4",
+    "tslib": "^2.8.1"
+  }
+}
