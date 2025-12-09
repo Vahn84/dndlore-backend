@@ -11,7 +11,15 @@ import sharp from 'sharp';
 import fs from 'fs';
 import path from 'path';
 import mongoose from 'mongoose';
-import { User, Group, Page, Event, TimeSystem, Asset, AssetFolder } from './models.js';
+import {
+	User,
+	Group,
+	Page,
+	Event,
+	TimeSystem,
+	Asset,
+	AssetFolder,
+} from './models.js';
 import discordClient from './discord-client.js';
 
 // Carica variabili d'ambiente con valori di default
@@ -21,13 +29,17 @@ const SESSION_SECRET = process.env.SESSION_SECRET || 'supersecret';
 const JWT_SECRET = process.env.JWT_SECRET || 'jwtsecret';
 
 // Connessione a MongoDB
-const MONGO_URI = process.env.MONGO_URI
+const MONGO_URI = process.env.MONGO_URI;
 
 // MongoDB connection options - allow self-signed certificates on public/free WiFi
 const mongoOptions = {
 	tls: true,
-	tlsAllowInvalidCertificates: process.env.NODE_ENV === 'development' || process.env.ALLOW_INVALID_CERTS === 'true',
-	tlsAllowInvalidHostnames: process.env.NODE_ENV === 'development' || process.env.ALLOW_INVALID_CERTS === 'true',
+	tlsAllowInvalidCertificates:
+		process.env.NODE_ENV === 'development' ||
+		process.env.ALLOW_INVALID_CERTS === 'true',
+	tlsAllowInvalidHostnames:
+		process.env.NODE_ENV === 'development' ||
+		process.env.ALLOW_INVALID_CERTS === 'true',
 };
 
 mongoose
@@ -94,7 +106,10 @@ const GOOGLE_CALLBACK_URL =
 	process.env.GOOGLE_CALLBACK_URL ||
 	`http://localhost:${PORT}/auth/google/callback`;
 // Avoid logging sensitive secrets in production logs
-console.log('Google OAuth configured:', !!(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET));
+console.log(
+	'Google OAuth configured:',
+	!!(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET)
+);
 console.log('OpenAI key configured:', !!process.env.OPENAI_API_KEY);
 
 // Helper function to refresh Google access token using refresh token
@@ -189,7 +204,10 @@ const storage = multer.diskStorage({
 const upload = multer({
 	storage,
 	limits: {
-		fileSize: parseInt(process.env.MAX_UPLOAD_BYTES || `${15 * 1024 * 1024}`, 10),
+		fileSize: parseInt(
+			process.env.MAX_UPLOAD_BYTES || `${15 * 1024 * 1024}`,
+			10
+		),
 	},
 });
 
@@ -222,35 +240,50 @@ function requireDM(req, res, next) {
 
 // Helper function to format a date using the time system configuration
 function formatEventDate(tsConfig, eraId, year, monthIndex, day) {
-	console.log('formatEventDate called with:', { eraId, year, monthIndex, day, hasConfig: !!tsConfig });
+	console.log('formatEventDate called with:', {
+		eraId,
+		year,
+		monthIndex,
+		day,
+		hasConfig: !!tsConfig,
+	});
 	if (!tsConfig || year == null) {
 		console.log('formatEventDate returning empty: no config or year');
 		return '';
 	}
-	
-	const era = tsConfig.eras?.find(e => e.id === eraId) || tsConfig.eras?.[0];
+
+	const era =
+		tsConfig.eras?.find((e) => e.id === eraId) || tsConfig.eras?.[0];
 	const eraAbbr = era?.abbreviation || '';
-	console.log('Era lookup:', { eraId, foundEra: era?.id, abbreviation: eraAbbr, allEras: tsConfig.eras?.map(e => ({ id: e.id, abbr: e.abbreviation })) });
+	console.log('Era lookup:', {
+		eraId,
+		foundEra: era?.id,
+		abbreviation: eraAbbr,
+		allEras: tsConfig.eras?.map((e) => ({
+			id: e.id,
+			abbr: e.abbreviation,
+		})),
+	});
 	console.log('Date formats:', tsConfig.dateFormats);
-	
+
 	// If only year is provided
 	if (monthIndex == null || monthIndex < 0) {
 		const format = tsConfig.dateFormats?.year || 'YYYY [E]';
 		let result = format
 			.replace(/YYYY/g, String(year))
 			.replace(/\[E\]/g, eraAbbr);
-		
+
 		// Also replace standalone E (not in brackets) for backwards compatibility
 		result = result.replace(/\bE\b/g, eraAbbr).trim();
-		
+
 		console.log('formatEventDate (year only) result:', result);
 		return result;
 	}
-	
+
 	const month = tsConfig.months?.[monthIndex];
 	const monthName = month?.name || '';
 	const monthNumber = monthIndex + 1;
-	
+
 	// If year + month
 	if (day == null || day <= 0) {
 		const format = tsConfig.dateFormats?.yearMonth || 'MMMM YYYY, [E]';
@@ -260,14 +293,14 @@ function formatEventDate(tsConfig, eraId, year, monthIndex, day) {
 			.replace(/MM/g, String(monthNumber).padStart(2, '0'))
 			.replace(/M/g, String(monthNumber))
 			.replace(/\[E\]/g, eraAbbr);
-		
+
 		// Also replace standalone E (not in brackets) for backwards compatibility
 		result = result.replace(/\bE\b/g, eraAbbr).trim();
-		
+
 		console.log('formatEventDate (year+month) result:', result);
 		return result;
 	}
-	
+
 	// Year + month + day
 	const format = tsConfig.dateFormats?.yearMonthDay || 'D^ MMMM YYYY, [E]';
 	console.log('Using format string:', format);
@@ -275,13 +308,17 @@ function formatEventDate(tsConfig, eraId, year, monthIndex, day) {
 		const mod100 = n % 100;
 		if (mod100 >= 11 && mod100 <= 13) return `${n}th`;
 		switch (n % 10) {
-			case 1: return `${n}st`;
-			case 2: return `${n}nd`;
-			case 3: return `${n}rd`;
-			default: return `${n}th`;
+			case 1:
+				return `${n}st`;
+			case 2:
+				return `${n}nd`;
+			case 3:
+				return `${n}rd`;
+			default:
+				return `${n}th`;
 		}
 	};
-	
+
 	let result = format
 		.replace(/YYYY/g, String(year))
 		.replace(/MMMM/g, monthName)
@@ -291,10 +328,10 @@ function formatEventDate(tsConfig, eraId, year, monthIndex, day) {
 		.replace(/DD/g, String(day).padStart(2, '0'))
 		.replace(/D/g, String(day))
 		.replace(/\[E\]/g, eraAbbr);
-	
+
 	// Also replace standalone E (not in brackets) for backwards compatibility
 	result = result.replace(/\bE\b/g, eraAbbr).trim();
-	
+
 	console.log('formatEventDate (full date) result:', result);
 	return result;
 }
@@ -447,7 +484,18 @@ app.post('/auth/logout', (req, res) => {
 // Gruppi
 // -----------------------------------------------------------------------------
 app.get('/groups', async (req, res) => {
-	const groups = await Group.find().sort({ order: 1 });
+	let groups = await Group.find().sort({ order: 1 });
+	// Ensure at least one defaultSelected group exists for clients that rely on a default
+	if (!groups.some((g) => g.defaultSelected)) {
+		const first = groups[0];
+		if (first) {
+			await Group.updateMany({}, { defaultSelected: false });
+			await Group.findByIdAndUpdate(first._id, {
+				defaultSelected: true,
+			});
+			groups = await Group.find().sort({ order: 1 });
+		}
+	}
 	res.json(groups);
 });
 
@@ -462,21 +510,56 @@ app.put('/groups', requireDM, async (req, res) => {
 });
 
 app.post('/groups', requireDM, async (req, res) => {
-	const { name } = req.body;
+	const {
+		name,
+		color,
+		exclude = false,
+		orderAscending = true,
+		defaultSelected = false,
+	} = req.body;
 	if (!name) return res.status(400).json({ error: 'name is required' });
 	const last = await Group.findOne().sort({ order: -1 });
 	const newOrder = last ? last.order + 1 : 0;
-	const group = await Group.create({ name, order: newOrder });
+	if (defaultSelected) {
+		await Group.updateMany({}, { defaultSelected: false });
+	}
+	const group = await Group.create({
+		name,
+		order: newOrder,
+		color,
+		exclude,
+		orderAscending,
+		defaultSelected,
+	});
 	res.json(group);
 });
 
 app.put('/groups/:id', requireDM, async (req, res) => {
 	const { id } = req.params;
-	const { name, color } = req.body;
-	console.log('Updating group:', id, name, color);
+	const {
+		name,
+		color,
+		order,
+		exclude,
+		orderAscending,
+		defaultSelected,
+	} = req.body;
+	console.log('Updating group:', id, name, color, exclude, orderAscending, defaultSelected);
+	if (defaultSelected === true) {
+		// Ensure only one default
+		await Group.updateMany({ _id: { $ne: id } }, { defaultSelected: false });
+	}
+
 	const group = await Group.findByIdAndUpdate(
 		id,
-		{ name, color },
+		{
+			...(name !== undefined ? { name } : {}),
+			...(color !== undefined ? { color } : {}),
+			...(order !== undefined ? { order } : {}),
+			...(exclude !== undefined ? { exclude } : {}),
+			...(orderAscending !== undefined ? { orderAscending } : {}),
+			...(defaultSelected !== undefined ? { defaultSelected } : {}),
+		},
 		{ new: true }
 	);
 	if (!group) return res.status(404).json({ error: 'Group not found' });
@@ -525,10 +608,14 @@ app.post('/events', requireDM, async (req, res) => {
 		startYear,
 		startMonthIndex,
 		startDay,
+		startHour,
+		startMinute,
 		endEraId,
 		endYear,
 		endMonthIndex,
 		endDay,
+		endHour,
+		endMinute,
 		pageId,
 		hidden = false,
 		color,
@@ -556,10 +643,14 @@ app.post('/events', requireDM, async (req, res) => {
 		startYear,
 		startMonthIndex,
 		startDay,
+		startHour,
+		startMinute,
 		endEraId,
 		endYear,
 		endMonthIndex,
 		endDay,
+		endHour,
+		endMinute,
 		icon,
 	});
 	res.json(event);
@@ -581,10 +672,14 @@ app.put('/events/:id', requireDM, async (req, res) => {
 		'startYear',
 		'startMonthIndex',
 		'startDay',
+		'startHour',
+		'startMinute',
 		'endEraId',
 		'endYear',
 		'endMonthIndex',
 		'endDay',
+		'endHour',
+		'endMinute',
 		'groupId',
 		'pageId',
 		'linkSync',
@@ -666,8 +761,10 @@ app.get('/pages', async (req, res) => {
 	}
 	const lim = Math.min(100, Math.max(1, Number(limit) || 50));
 	// Sort by order field first (ascending), then by updatedAt (descending) as fallback
-	const pages = await Page.find(query).limit(lim).sort({ order: 1, updatedAt: -1 });
-	console.log('Pages fetched', pages)
+	const pages = await Page.find(query)
+		.limit(lim)
+		.sort({ order: 1, updatedAt: -1 });
+	console.log('Pages fetched', pages);
 	res.json(pages);
 });
 
@@ -740,7 +837,7 @@ app.put('/pages/:id', requireDM, async (req, res) => {
 			}
 		}
 	});
-	
+
 	// Build the MongoDB update operation
 	const updateOperation = {};
 	if (Object.keys(update).length > 0) {
@@ -749,33 +846,39 @@ app.put('/pages/:id', requireDM, async (req, res) => {
 	if (Object.keys(unset).length > 0) {
 		updateOperation.$unset = unset;
 	}
-	
+
 	console.log('Page updated:', update, 'Unset:', unset);
 	if (update.draft === true) {
 		console.log(`Page ${id} is being unpublished (draft=true)`);
 	}
-	const page = await Page.findByIdAndUpdate(id, updateOperation, { new: true });
+	const page = await Page.findByIdAndUpdate(id, updateOperation, {
+		new: true,
+	});
 	if (!page) return res.status(404).json({ error: 'Page not found' });
 
 	// After updating a page, propagate to linked events that opt into syncing
 	try {
 		const linkedEvents = await Event.find({ pageId: id });
-		console.log(`Found ${linkedEvents.length} linked events for page ${id}`);
-		
+		console.log(
+			`Found ${linkedEvents.length} linked events for page ${id}`
+		);
+
 		// Fetch time system once for formatting dates
 		const ts = await TimeSystem.findOne();
 		const tsConfig = ts?.config || null;
 
 		for (const ev of linkedEvents) {
 			let changed = false;
-			
+
 			// If unpublishing (draft=true), hide the event (regardless of linkSync)
 			if (update.draft === true && !ev.hidden) {
 				ev.hidden = true;
 				changed = true;
-				console.log(`Hiding event ${ev._id} (${ev.title}) linked to unpublished page ${id}`);
+				console.log(
+					`Hiding event ${ev._id} (${ev.title}) linked to unpublished page ${id}`
+				);
 			}
-			
+
 			// Only sync other fields if linkSync is enabled
 			if (!ev.linkSync) {
 				// Still save if we changed hidden status
@@ -810,26 +913,40 @@ app.put('/pages/:id', requireDM, async (req, res) => {
 				const nextMonth =
 					typeof wd.monthIndex === 'number' ? wd.monthIndex : null;
 				const nextDay = typeof wd.day === 'number' ? wd.day : null;
+				const nextHour =
+					typeof wd.hour === 'number' ? wd.hour : null;
+				const nextMinute =
+					typeof wd.minute === 'number' ? wd.minute : null;
 				if (
 					ev.startEraId !== nextEra ||
 					ev.startYear !== nextYear ||
 					ev.startMonthIndex !== nextMonth ||
-					ev.startDay !== nextDay
+					ev.startDay !== nextDay ||
+					ev.startHour !== nextHour ||
+					ev.startMinute !== nextMinute
 				) {
 					ev.startEraId = nextEra;
 					ev.startYear = nextYear;
 					ev.startMonthIndex = nextMonth;
 					ev.startDay = nextDay;
+					ev.startHour = nextHour;
+					ev.startMinute = nextMinute;
 					// Clear endDate fields for single-day events
 					ev.endEraId = null;
 					ev.endYear = null;
 					ev.endMonthIndex = null;
 					ev.endDay = null;
 					ev.endDate = '';
-					
+
 					// Format startDate string using time system if available
 					if (tsConfig) {
-						ev.startDate = formatEventDate(tsConfig, nextEra, nextYear, nextMonth, nextDay);
+						ev.startDate = formatEventDate(
+							tsConfig,
+							nextEra,
+							nextYear,
+							nextMonth,
+							nextDay
+						);
 					}
 					changed = true;
 				}
@@ -859,7 +976,9 @@ app.put('/pages/:id', requireDM, async (req, res) => {
 			}
 			if (changed) {
 				await ev.save();
-				console.log(`Event ${ev._id} synced. startDate: "${ev.startDate}", startYear: ${ev.startYear}, startMonthIndex: ${ev.startMonthIndex}, startDay: ${ev.startDay}`);
+				console.log(
+					`Event ${ev._id} synced. startDate: "${ev.startDate}", startYear: ${ev.startYear}, startMonthIndex: ${ev.startMonthIndex}, startDay: ${ev.startDay}`
+				);
 			}
 		}
 	} catch (propErr) {
@@ -883,7 +1002,7 @@ app.patch('/pages/reorder/:type', requireDM, async (req, res) => {
 	try {
 		const { type } = req.params;
 		const { pageIds } = req.body; // Array of page IDs in desired order
-		
+
 		if (!Array.isArray(pageIds)) {
 			return res.status(400).json({ error: 'pageIds must be an array' });
 		}
@@ -958,7 +1077,7 @@ app.post('/upload', requireDM, upload.single('file'), async (req, res) => {
 // Avvio server
 app.listen(PORT, async () => {
 	console.log(`Backend listening on port ${PORT}`);
-	
+
 	// Initialize Discord bot (non-blocking)
 	try {
 		await discordClient.connect();
@@ -1008,12 +1127,14 @@ app.get('/time-system', async (req, res) => {
 						abbreviation: 'DE',
 						name: 'Divine Era',
 						startYear: 10000,
+						backward: true,
 					},
 					{
 						id: '2',
 						abbreviation: 'IE',
 						name: 'Immortals Era',
 						startYear: 0,
+						backward: false,
 					},
 				],
 				hoursPerDay: 24,
@@ -1060,33 +1181,38 @@ app.get('/integrations/google/calendars', requireAuth, async (req, res) => {
 	try {
 		// JWT payload stores user id as `id` (see /auth/google/callback), not `userId`
 		const user = await User.findById(req.user.id);
-		
+
 		if (!user || !user.googleAccessToken) {
-			return res.status(401).json({ 
+			return res.status(401).json({
 				error: 'Not connected to Google Calendar',
-				message: 'Please connect your Google account first.'
+				message: 'Please connect your Google account first.',
 			});
 		}
-		
+
 		// Check if token is expired
 		const now = new Date();
-		const tokenExpired = user.googleTokenExpiry && user.googleTokenExpiry < now;
-		
+		const tokenExpired =
+			user.googleTokenExpiry && user.googleTokenExpiry < now;
+
 		let accessToken = user.googleAccessToken;
-		
+
 		if (tokenExpired && user.googleRefreshToken) {
 			console.log('Google token expired, refreshing...');
 			const refreshed = await refreshGoogleToken(user.googleRefreshToken);
 			if (refreshed) {
 				accessToken = refreshed.accessToken;
 				user.googleAccessToken = refreshed.accessToken;
-				user.googleTokenExpiry = new Date(Date.now() + refreshed.expiresIn * 1000);
+				user.googleTokenExpiry = new Date(
+					Date.now() + refreshed.expiresIn * 1000
+				);
 				await user.save();
 			} else {
-				return res.status(401).json({ error: 'Failed to refresh Google token' });
+				return res
+					.status(401)
+					.json({ error: 'Failed to refresh Google token' });
 			}
 		}
-		
+
 		// Fetch calendar list from Google
 		const calResponse = await fetch(
 			'https://www.googleapis.com/calendar/v3/users/me/calendarList',
@@ -1097,28 +1223,33 @@ app.get('/integrations/google/calendars', requireAuth, async (req, res) => {
 				},
 			}
 		);
-		
+
 		if (!calResponse.ok) {
 			const errorText = await calResponse.text();
 			console.error('Failed to fetch Google calendars:', errorText);
-			return res.status(calResponse.status).json({ error: 'Failed to fetch calendars' });
+			return res
+				.status(calResponse.status)
+				.json({ error: 'Failed to fetch calendars' });
 		}
-		
+
 		const data = await calResponse.json();
-		
+
 		// Return simplified calendar list
-		const calendars = data.items.map(cal => ({
+		const calendars = data.items.map((cal) => ({
 			id: cal.id,
 			name: cal.summary,
 			primary: cal.primary || false,
 			backgroundColor: cal.backgroundColor,
 			accessRole: cal.accessRole,
 		}));
-		
+
 		res.json(calendars);
 	} catch (err) {
 		console.error('GET /integrations/google/calendars failed', err);
-		res.status(500).json({ error: 'Failed to fetch Google calendars', details: err.message });
+		res.status(500).json({
+			error: 'Failed to fetch Google calendars',
+			details: err.message,
+		});
 	}
 });
 
@@ -1129,9 +1260,10 @@ app.get('/integrations/google/calendars', requireAuth, async (req, res) => {
 app.get('/integrations/discord/channels', requireAuth, async (req, res) => {
 	try {
 		if (!discordClient.isAvailable()) {
-			return res.status(503).json({ 
+			return res.status(503).json({
 				error: 'Discord integration not available',
-				message: 'Discord bot is not connected. Check DISCORD_BOT_TOKEN and DISCORD_GUILD_ID environment variables.'
+				message:
+					'Discord bot is not connected. Check DISCORD_BOT_TOKEN and DISCORD_GUILD_ID environment variables.',
 			});
 		}
 
@@ -1139,7 +1271,10 @@ app.get('/integrations/discord/channels', requireAuth, async (req, res) => {
 		res.json(channels);
 	} catch (err) {
 		console.error('GET /integrations/discord/channels failed', err);
-		res.status(500).json({ error: 'Failed to fetch Discord channels', details: err.message });
+		res.status(500).json({
+			error: 'Failed to fetch Discord channels',
+			details: err.message,
+		});
 	}
 });
 
@@ -1147,25 +1282,36 @@ app.get('/integrations/discord/channels', requireAuth, async (req, res) => {
  * GET /integrations/discord/voice-channels
  * Fetch all voice channels from the configured Discord guild
  */
-app.get('/integrations/discord/voice-channels', requireAuth, async (req, res) => {
-	try {
-		if (!discordClient.isAvailable()) {
-			return res.status(503).json({ 
-				error: 'Discord integration not available',
-				message: 'Discord bot is not connected. Check DISCORD_BOT_TOKEN and DISCORD_GUILD_ID environment variables.'
+app.get(
+	'/integrations/discord/voice-channels',
+	requireAuth,
+	async (req, res) => {
+		try {
+			if (!discordClient.isAvailable()) {
+				return res.status(503).json({
+					error: 'Discord integration not available',
+					message:
+						'Discord bot is not connected. Check DISCORD_BOT_TOKEN and DISCORD_GUILD_ID environment variables.',
+				});
+			}
+
+			const voiceChannels = await discordClient.getVoiceChannels();
+			res.json({
+				guildId: process.env.DISCORD_GUILD_ID,
+				channels: voiceChannels,
+			});
+		} catch (err) {
+			console.error(
+				'GET /integrations/discord/voice-channels failed',
+				err
+			);
+			res.status(500).json({
+				error: 'Failed to fetch Discord voice channels',
+				details: err.message,
 			});
 		}
-
-		const voiceChannels = await discordClient.getVoiceChannels();
-		res.json({
-			guildId: process.env.DISCORD_GUILD_ID,
-			channels: voiceChannels
-		});
-	} catch (err) {
-		console.error('GET /integrations/discord/voice-channels failed', err);
-		res.status(500).json({ error: 'Failed to fetch Discord voice channels', details: err.message });
 	}
-});
+);
 
 /**
  * POST /integrations/discord/events
@@ -1175,13 +1321,23 @@ app.get('/integrations/discord/voice-channels', requireAuth, async (req, res) =>
 app.post('/integrations/discord/events', requireAuth, async (req, res) => {
 	try {
 		if (!discordClient.isAvailable()) {
-			return res.status(503).json({ 
+			return res.status(503).json({
 				error: 'Discord integration not available',
-				message: 'Discord bot is not connected. Check DISCORD_BOT_TOKEN and DISCORD_GUILD_ID environment variables.'
+				message:
+					'Discord bot is not connected. Check DISCORD_BOT_TOKEN and DISCORD_GUILD_ID environment variables.',
 			});
 		}
 
-		const { title, description, bannerUrl, dateTimeUtc, channelId, voiceChannelId, syncToCalendar, calendarId } = req.body;
+		const {
+			title,
+			description,
+			bannerUrl,
+			dateTimeUtc,
+			channelId,
+			voiceChannelId,
+			syncToCalendar,
+			calendarId,
+		} = req.body;
 
 		console.log('Creating Discord event with params:', {
 			title,
@@ -1191,7 +1347,7 @@ app.post('/integrations/discord/events', requireAuth, async (req, res) => {
 			channelId,
 			voiceChannelId,
 			syncToCalendar,
-			calendarId
+			calendarId,
 		});
 
 		if (!title) {
@@ -1199,7 +1355,9 @@ app.post('/integrations/discord/events', requireAuth, async (req, res) => {
 		}
 
 		if (!dateTimeUtc) {
-			return res.status(400).json({ error: 'Event date/time is required' });
+			return res
+				.status(400)
+				.json({ error: 'Event date/time is required' });
 		}
 
 		const scheduledStartTime = new Date(dateTimeUtc);
@@ -1210,7 +1368,7 @@ app.post('/integrations/discord/events', requireAuth, async (req, res) => {
 		// Create Discord scheduled event
 		const discordEvent = await discordClient.createScheduledEvent({
 			name: title,
-			description: description || `D&D Lore event: ${title}`,
+			description: description || `Aetherium event: ${title}`,
 			scheduledStartTime,
 			voiceChannelId: voiceChannelId || null,
 			image: bannerUrl,
@@ -1224,7 +1382,10 @@ app.post('/integrations/discord/events', requireAuth, async (req, res) => {
 					`📅 **New Event Created:** ${title}\n${discordEvent.url}`
 				);
 			} catch (msgErr) {
-				console.error('Failed to send message to channel after event creation:', msgErr);
+				console.error(
+					'Failed to send message to channel after event creation:',
+					msgErr
+				);
 				// Don't fail the whole request if message send fails
 			}
 		}
@@ -1235,34 +1396,44 @@ app.post('/integrations/discord/events', requireAuth, async (req, res) => {
 		if (syncToCalendar) {
 			try {
 				const user = await User.findById(req.user.id);
-				
+
 				if (!user || !user.googleAccessToken) {
-					console.warn('User has no Google Calendar token, skipping sync');
+					console.warn(
+						'User has no Google Calendar token, skipping sync'
+					);
 				} else {
 					// Check if token is expired
 					const now = new Date();
-					const tokenExpired = user.googleTokenExpiry && user.googleTokenExpiry < now;
-					
+					const tokenExpired =
+						user.googleTokenExpiry && user.googleTokenExpiry < now;
+
 					let accessToken = user.googleAccessToken;
-					
+
 					if (tokenExpired && user.googleRefreshToken) {
 						console.log('Google token expired, refreshing...');
-						const refreshed = await refreshGoogleToken(user.googleRefreshToken);
+						const refreshed = await refreshGoogleToken(
+							user.googleRefreshToken
+						);
 						if (refreshed) {
 							accessToken = refreshed.accessToken;
 							user.googleAccessToken = refreshed.accessToken;
-							user.googleTokenExpiry = new Date(Date.now() + refreshed.expiresIn * 1000);
+							user.googleTokenExpiry = new Date(
+								Date.now() + refreshed.expiresIn * 1000
+							);
 							await user.save();
 						}
 					}
-					
+
 					if (accessToken) {
 						// Create event in Google Calendar
-						const endTime = new Date(scheduledStartTime.getTime() + 3 * 60 * 60 * 1000); // +3 hours
-						
+						const endTime = new Date(
+							scheduledStartTime.getTime() + 3 * 60 * 60 * 1000
+						); // +3 hours
+
 						const calendarEventData = {
 							summary: title,
-							description: description || `D&D Lore Discord event: ${title}`,
+							description:
+								description || `Aetherium event: ${title}`,
 							start: {
 								dateTime: scheduledStartTime.toISOString(),
 								timeZone: 'UTC',
@@ -1272,12 +1443,14 @@ app.post('/integrations/discord/events', requireAuth, async (req, res) => {
 								timeZone: 'UTC',
 							},
 						};
-						
+
 						// Use specified calendar or default to primary
 						const targetCalendar = calendarId || 'primary';
-						
+
 						const calResponse = await fetch(
-							`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(targetCalendar)}/events`,
+							`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+								targetCalendar
+							)}/events`,
 							{
 								method: 'POST',
 								headers: {
@@ -1287,13 +1460,19 @@ app.post('/integrations/discord/events', requireAuth, async (req, res) => {
 								body: JSON.stringify(calendarEventData),
 							}
 						);
-						
+
 						if (calResponse.ok) {
 							calendarEvent = await calResponse.json();
-							console.log('Google Calendar event created:', calendarEvent.id);
+							console.log(
+								'Google Calendar event created:',
+								calendarEvent.id
+							);
 						} else {
 							const errorText = await calResponse.text();
-							console.error('Failed to create Google Calendar event:', errorText);
+							console.error(
+								'Failed to create Google Calendar event:',
+								errorText
+							);
 						}
 					}
 				}
@@ -1307,13 +1486,16 @@ app.post('/integrations/discord/events', requireAuth, async (req, res) => {
 			success: true,
 			discordEvent,
 			calendarEvent,
-			message: calendarEvent 
+			message: calendarEvent
 				? 'Discord event created and synced to Google Calendar'
 				: 'Discord event created successfully',
 		});
 	} catch (err) {
 		console.error('POST /integrations/discord/events failed', err);
-		res.status(500).json({ error: 'Failed to create Discord event', details: err.message });
+		res.status(500).json({
+			error: 'Failed to create Discord event',
+			details: err.message,
+		});
 	}
 });
 
@@ -1337,9 +1519,7 @@ app.post('/assets', requireDM, upload.single('file'), async (req, res) => {
 		let url = null;
 		let bannerThumbUrl = null;
 		const folderId =
-			req.body && req.body.folderId
-				? req.body.folderId || null
-				: null;
+			req.body && req.body.folderId ? req.body.folderId || null : null;
 
 		if (req.file) {
 			url = `/uploads/${req.file.filename}`;
@@ -1498,9 +1678,9 @@ app.patch('/assets/:id/move', requireDM, async (req, res) => {
 			{ folderId: folderId || null },
 			{ new: true }
 		);
-		
+
 		if (!asset) return res.status(404).json({ error: 'Asset not found' });
-		
+
 		res.json(asset);
 	} catch (err) {
 		console.error('PATCH /assets/:id/move failed', err);
@@ -1543,12 +1723,12 @@ app.post('/asset-folders', requireDM, async (req, res) => {
 app.delete('/asset-folders/:id', requireDM, async (req, res) => {
 	try {
 		const { id } = req.params;
-		
+
 		// Check if folder contains any assets
 		const assetsInFolder = await Asset.countDocuments({ folderId: id });
 		if (assetsInFolder > 0) {
-			return res.status(400).json({ 
-				error: 'Cannot delete folder with assets. Move or delete assets first.' 
+			return res.status(400).json({
+				error: 'Cannot delete folder with assets. Move or delete assets first.',
 			});
 		}
 
@@ -1746,11 +1926,9 @@ app.post('/sync/campaign/preview', requireDM, async (req, res) => {
 		} // Close else if (googleAccessToken) block
 
 		if (!txt) {
-			return res
-				.status(400)
-				.json({
-					error: 'Could not fetch document. Make sure it is publicly accessible or provide a valid Google access token.',
-				});
+			return res.status(400).json({
+				error: 'Could not fetch document. Make sure it is publicly accessible or provide a valid Google access token.',
+			});
 		}
 
 		// 3) Parse out sections by date headers (DD.MM.YYYY format)
@@ -1775,37 +1953,40 @@ app.post('/sync/campaign/preview', requireDM, async (req, res) => {
 			}
 		}
 		if (currSection) sections.push(currSection);
-		
+
 		if (sections.length === 0) {
 			return res.json({
-				message: 'No date section found (looking for DD.MM.YYYY format)',
+				message:
+					'No date section found (looking for DD.MM.YYYY format)',
 				availableDates: [],
 			});
 		}
 
 		// Filter out dates that already exist in the database
 		const existingDates = new Set(
-			pages
-				.filter(p => p.sessionDate)
-				.map(p => p.sessionDate.trim())
+			pages.filter((p) => p.sessionDate).map((p) => p.sessionDate.trim())
 		);
 
-		const availableSections = sections.filter(section => {
+		const availableSections = sections.filter((section) => {
 			// Check if this date already exists in DB (as DD.MM.YYYY or DD/MM/YYYY)
 			const dateWithDots = section.date; // DD.MM.YYYY
 			const dateWithSlashes = section.date.replace(/\./g, '/'); // DD/MM/YYYY
-			return !existingDates.has(dateWithDots) && !existingDates.has(dateWithSlashes);
+			return (
+				!existingDates.has(dateWithDots) &&
+				!existingDates.has(dateWithSlashes)
+			);
 		});
 
 		if (availableSections.length === 0) {
 			return res.json({
-				message: 'No new dates found (all dates from document already exist in database)',
+				message:
+					'No new dates found (all dates from document already exist in database)',
 				availableDates: [],
 			});
 		}
 
 		// Return all available dates with their content
-		const availableDates = availableSections.map(section => ({
+		const availableDates = availableSections.map((section) => ({
 			date: section.date, // DD.MM.YYYY format
 			content: section.content.join('\n').trim(),
 		}));
@@ -1840,9 +2021,11 @@ app.post('/sync/campaign/summarize', requireDM, async (req, res) => {
 		}
 
 		const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-		
+
 		if (!OPENAI_API_KEY) {
-			return res.status(400).json({ error: 'OpenAI API key not configured' });
+			return res
+				.status(400)
+				.json({ error: 'OpenAI API key not configured' });
 		}
 
 		console.log('Summarizing session via OpenAI...');
@@ -1965,7 +2148,9 @@ app.post('/sync/campaign/summarize', requireDM, async (req, res) => {
 			if (content) summary = content;
 		} catch (e) {
 			console.error('OpenAI call failed', e);
-			return res.status(500).json({ error: 'OpenAI summarization failed' });
+			return res
+				.status(500)
+				.json({ error: 'OpenAI summarization failed' });
 		}
 
 		res.json({
@@ -2043,17 +2228,27 @@ app.post('/sync/campaign/create', requireDM, async (req, res) => {
 		try {
 			const last = await Event.findOne().sort({ order: -1 });
 			const order = last ? last.order + 1 : 0;
-			
+
 			// Parse worldDate object into separate fields for Event
 			let eventDateFields = {};
 			if (worldDate && typeof worldDate === 'object') {
 				eventDateFields = {
 					startEraId: worldDate.eraId || null,
 					startYear: worldDate.year ? Number(worldDate.year) : null,
-					startMonthIndex: worldDate.monthIndex ? Number(worldDate.monthIndex) : null,
+					startMonthIndex: worldDate.monthIndex
+						? Number(worldDate.monthIndex)
+						: null,
 					startDay: worldDate.day ? Number(worldDate.day) : null,
+					startHour:
+						worldDate.hour !== undefined
+							? Number(worldDate.hour)
+							: null,
+					startMinute:
+						worldDate.minute !== undefined
+							? Number(worldDate.minute)
+							: null,
 				};
-				
+
 				// Format startDate string using time system if available
 				const ts = await TimeSystem.findOne();
 				const tsConfig = ts?.config || null;
@@ -2067,8 +2262,18 @@ app.post('/sync/campaign/create', requireDM, async (req, res) => {
 					);
 				}
 			}
-			
-			console.log('Creating event with:', { title: page.title, type: 'campaign', groupId: campaignGroup._id, pageId: page._id, hidden: true, linkSync: true, order, detailLevel: 'Day', ...eventDateFields });
+
+			console.log('Creating event with:', {
+				title: page.title,
+				type: 'campaign',
+				groupId: campaignGroup._id,
+				pageId: page._id,
+				hidden: true,
+				linkSync: true,
+				order,
+				detailLevel: 'Day',
+				...eventDateFields,
+			});
 			createdEvent = await Event.create({
 				title: page.title,
 				type: 'campaign',
@@ -2086,7 +2291,10 @@ app.post('/sync/campaign/create', requireDM, async (req, res) => {
 			console.error('Failed to create event for synced session:', evErr);
 		}
 
-		console.log('Responding with page and event:', { pageId: page._id, eventId: createdEvent?._id });
+		console.log('Responding with page and event:', {
+			pageId: page._id,
+			eventId: createdEvent?._id,
+		});
 		res.json({ created: page, event: createdEvent });
 	} catch (err) {
 		console.error(err);
@@ -2250,11 +2458,9 @@ app.post('/sync/campaign/from-google', requireDM, async (req, res) => {
 		}
 		if (current) sections.push(current);
 		if (sections.length === 0)
-			return res
-				.status(400)
-				.json({
-					error: 'No date headings found. Use DD/MM/YYYY, DD.MM.YYYY, or DD-MM-YYYY on its own line.',
-				});
+			return res.status(400).json({
+				error: 'No date headings found. Use DD/MM/YYYY, DD.MM.YYYY, or DD-MM-YYYY on its own line.',
+			});
 
 		// Find the newest section newer than latestLocal
 		let chosen = null;

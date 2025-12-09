@@ -17,6 +17,12 @@ const groupSchema = new mongoose.Schema({
 	// Manual ordering for display
 	order: { type: Number, default: 0 },
 	color: { type: String },
+	// Exclusive groups hide all others when selected
+	exclude: { type: Boolean, default: false },
+	// Sort direction for exclusive groups
+	orderAscending: { type: Boolean, default: true },
+	// Default selection when no filter is provided
+	defaultSelected: { type: Boolean, default: false },
 });
 
 // I blocchi della pagina possono contenere testo o immagine e un flag hidden opzionale
@@ -88,12 +94,14 @@ const pageSchema = new mongoose.Schema(
 		// Real-world session date for campaign pages (DD/MM/YYYY)
 		sessionDate: { type: String },
 		// In-world date for campaign pages (custom calendar)
-		worldDate: {
-			eraId: { type: String },
-			year: { type: Number },
-			monthIndex: { type: Number },
-			day: { type: Number },
-		},
+	worldDate: {
+		eraId: { type: String },
+		year: { type: Number },
+		monthIndex: { type: Number },
+		day: { type: Number },
+		hour: { type: Number },
+		minute: { type: Number },
+	},
 		// If true, the entire page is hidden from public view
 		hidden: { type: Boolean, default: false },
 		// Draft flag: if true, the page is not published
@@ -120,10 +128,14 @@ const eventSchema = new mongoose.Schema(
 		startYear: { type: Number },
 		startMonthIndex: { type: Number },
 		startDay: { type: Number },
+		startHour: { type: Number },
+		startMinute: { type: Number },
 		endEraId: { type: String },
 		endYear: { type: Number },
 		endMonthIndex: { type: Number },
 		endDay: { type: Number },
+		endHour: { type: Number },
+		endMinute: { type: Number },
 		bannerUrl: { type: String },
 		// Banner thumbnail URL (for timeline/list display)
 		bannerThumbUrl: { type: String },
