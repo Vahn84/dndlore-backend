@@ -2,10 +2,10 @@
   "name": "dndlore-backend-js",
   "version": "1.0.0",
   "description": "Backend JavaScript per la replica di DnD Lore",
-  "main": "index.js",
+  "main": "server.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js",
+    "start": "node server.js",
     "seed": "node seed.js",
     "init:env": "node scripts/configure-env.js"
   },
