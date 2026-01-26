@@ -85,8 +85,11 @@ app.use(
 app.use(passport.initialize());
 app.use(passport.session());
 
-// Serialization is handled in ./config/passport.js
-// Removed duplicate serialize/deserialize to avoid conflicts
+app.use("/api", (req, res, next) => {
+  console.log("DEBUG: API route hit:", req.method, req.path);
+  next();
+});
+
 
 // Gestione uploads
 fs.mkdirSync(UPLOADS_PATH, { recursive: true });
@@ -94,6 +97,11 @@ app.use("/api/uploads", requireDM, express.static(UPLOADS_PATH));
 
 // Register API routes under /api prefix
 app.use("/api", apiRouter);
+
+app.all("/api/*", (req, res, next) => {
+  console.log("DEBUG: API route pattern matched:", req.path);
+  next();
+});
 
 // Avvio server
 app.listen(PORT, async () => {
