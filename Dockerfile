@@ -23,4 +23,4 @@ RUN mkdir -p uploads
 EXPOSE 10101
 
 # Start the application
-CMD ["node", "index.js"]
+CMD ["node", "server.js"]
