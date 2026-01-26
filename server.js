@@ -44,6 +44,7 @@ const app = express();
 
 // Health check endpoint for Docker
 app.get("/health", (req, res) => {
+  console.log("DEBUG: API route hit:", req.method, req.path);
   res.status(200).json({ status: "ok" });
 });
 
@@ -93,15 +94,12 @@ app.use("/api", (req, res, next) => {
 
 // Gestione uploads
 fs.mkdirSync(UPLOADS_PATH, { recursive: true });
-app.use("/api/uploads", requireDM, express.static(UPLOADS_PATH));
+app.use("/uploads", requireDM, express.static(UPLOADS_PATH));
 
 // Register API routes under /api prefix
-app.use("/api", apiRouter);
+app.use(apiRouter);
 
-app.all("/api/*", (req, res, next) => {
-  console.log("DEBUG: API route pattern matched:", req.path);
-  next();
-});
+
 
 // Avvio server
 app.listen(PORT, async () => {
