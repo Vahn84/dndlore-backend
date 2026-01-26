@@ -94,7 +94,7 @@ app.use("/api", (req, res, next) => {
 
 // Gestione uploads
 fs.mkdirSync(UPLOADS_PATH, { recursive: true });
-app.use("/uploads", requireDM, express.static(UPLOADS_PATH));
+app.use("/uploads", express.static(UPLOADS_PATH));
 
 // Register API routes under /api prefix
 app.use(apiRouter);
