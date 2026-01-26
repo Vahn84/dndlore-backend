@@ -90,7 +90,7 @@ jobs:
 
             # Start new backend container with host network to fix Alpine DNS/SRV issues
             # Host network shares the NAS's DNS resolvers which work correctly
-            docker run -d --name dndlore-backend --restart unless-stopped \
+            docker run --name dndlore-backend -d --restart unless-stopped \
               --network host \
               -e NODE_ENV=production -e PORT="$PORT" \
               -e FRONTEND_ORIGIN='${{ secrets.FRONTEND_ORIGIN }}' \
