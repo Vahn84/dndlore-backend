@@ -1,12 +1,14 @@
-import { app, requireDM } from '../../server.js';
+import express from 'express';
+import { requireDM } from '../../middleware/auth.js';
 import { AssetFolder, Asset } from '../../models.js';
 
 // -----------------------------------------------------------------------------
 // Asset Folders
 // -----------------------------------------------------------------------------
+const router = express.Router();
 
 // List all asset folders
-app.get('/asset-folders', async (req, res) => {
+router.get('/asset-folders', async (req, res) => {
   try {
     const folders = await AssetFolder.find().sort({ createdAt: -1 });
     res.json(folders);
@@ -17,7 +19,7 @@ app.get('/asset-folders', async (req, res) => {
 });
 
 // Create a new asset folder
-app.post('/asset-folders', requireDM, async (req, res) => {
+router.post('/asset-folders', requireDM, async (req, res) => {
   try {
     const { name } = req.body;
     if (!name || !name.trim()) {
@@ -33,7 +35,7 @@ app.post('/asset-folders', requireDM, async (req, res) => {
 });
 
 // Delete an asset folder (only if empty)
-app.delete('/asset-folders/:id', requireDM, async (req, res) => {
+router.delete('/asset-folders/:id', requireDM, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -54,3 +56,5 @@ app.delete('/asset-folders/:id', requireDM, async (req, res) => {
     res.status(500).json({ error: 'Internal error' });
   }
 });
+
+export default router;

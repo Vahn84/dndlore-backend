@@ -1,34 +1,36 @@
-import { app, requireDM } from '../../server.js';
-import { Page } from '../../models.js';
+import express from "express";
+import { requireDM } from "../../middleware/auth.js";
+import { Page, Event, TimeSystem } from "../../models.js";
+import { formatEventDate } from "../../utils/time.js";
 
 // -----------------------------------------------------------------------------
 // Pagine
 // -----------------------------------------------------------------------------
-app.get('/pages', async (req, res) => {
+const router = express.Router();
+
+router.get("/pages", async (req, res) => {
   const { type, q, limit } = req.query;
   const query = {};
   if (type) {
     query.type = type;
   }
-  if (q && typeof q === 'string' && q.trim()) {
-    query.title = { $regex: q.trim(), $options: 'i' };
+  if (q && typeof q === "string" && q.trim()) {
+    query.title = { $regex: q.trim(), $options: "i" };
   }
   const lim = Math.min(100, Math.max(1, Number(limit) || 50));
   // Sort by order field first (ascending), then by updatedAt (descending) as fallback
-  const pages = await Page.find(query)
-    .limit(lim)
-    .sort({ order: 1, updatedAt: -1 });
-  console.log('Pages fetched', pages);
+  const pages = await Page.find(query).limit(lim).sort({ order: 1 });
+  console.log("Pages fetched", pages);
   res.json(pages);
 });
 
-app.get('/pages/:id', async (req, res) => {
+router.get("/pages/:id", async (req, res) => {
   const page = await Page.findById(req.params.id);
-  if (!page) return res.status(404).json({ error: 'Page not found' });
+  if (!page) return res.status(404).json({ error: "Page not found" });
   res.json(page);
 });
 
-app.post('/pages', requireDM, async (req, res) => {
+router.post("/pages", requireDM, async (req, res) => {
   const {
     title,
     type,
@@ -42,11 +44,11 @@ app.post('/pages', requireDM, async (req, res) => {
     hidden = false,
     draft = false,
   } = req.body;
-  if (!title) return res.status(400).json({ error: 'title is required' });
-  if (!type) return res.status(400).json({ error: 'type is required' });
+  if (!title) return res.status(400).json({ error: "title is required" });
+  if (!type) return res.status(400).json({ error: "type is required" });
   const page = await Page.create({
     title,
-    subtitle: '',
+    subtitle: "",
     type,
     placeType,
     coordinates,
@@ -58,34 +60,35 @@ app.post('/pages', requireDM, async (req, res) => {
     hidden,
     draft,
   });
+
   res.json(page);
 });
 
-app.put('/pages/:id', requireDM, async (req, res) => {
+router.put("/pages/:id", requireDM, async (req, res) => {
   const { id } = req.params;
   const update = {};
   const unset = {};
   const fields = [
-    'title',
-    'subtitle',
-    'type',
-    'placeType',
-    'coordinates',
-    'bannerUrl',
-    'bannerThumbUrl',
-    'assetId',
-    'blocks',
-    'sessionDate',
-    'worldDate',
-    'hidden',
-    'draft',
+    "title",
+    "subtitle",
+    "type",
+    "placeType",
+    "coordinates",
+    "bannerUrl",
+    "bannerThumbUrl",
+    "assetId",
+    "blocks",
+    "sessionDate",
+    "worldDate",
+    "hidden",
+    "draft",
   ];
   fields.forEach((field) => {
     // Check if field exists in request body (even if undefined/null)
     if (req.body.hasOwnProperty(field)) {
       // If explicitly set to null or undefined, remove the field
       if (req.body[field] === null || req.body[field] === undefined) {
-        unset[field] = '';
+        unset[field] = "";
       } else {
         update[field] = req.body[field];
       }
@@ -101,21 +104,19 @@ app.put('/pages/:id', requireDM, async (req, res) => {
     updateOperation.$unset = unset;
   }
 
-  console.log('Page updated:', update, 'Unset:', unset);
+  console.log("Page updated:", update, "Unset:", unset);
   if (update.draft === true) {
     console.log(`Page ${id} is being unpublished (draft=true)`);
   }
   const page = await Page.findByIdAndUpdate(id, updateOperation, {
     new: true,
   });
-  if (!page) return res.status(404).json({ error: 'Page not found' });
+  if (!page) return res.status(404).json({ error: "Page not found" });
 
   // After updating a page, propagate to linked events that opt into syncing
   try {
     const linkedEvents = await Event.find({ pageId: id });
-    console.log(
-      `Found ${linkedEvents.length} linked events for page ${id}`
-    );
+    console.log(`Found ${linkedEvents.length} linked events for page ${id}`);
 
     // Fetch time system once for formatting dates
     const ts = await TimeSystem.findOne();
@@ -129,7 +130,7 @@ app.put('/pages/:id', requireDM, async (req, res) => {
         ev.hidden = true;
         changed = true;
         console.log(
-          `Hiding event ${ev._id} (${ev.title}) linked to unpublished page ${id}`
+          `Hiding event ${ev._id} (${ev.title}) linked to unpublished page ${id}`,
         );
       }
 
@@ -148,13 +149,13 @@ app.put('/pages/:id', requireDM, async (req, res) => {
         changed = true;
       }
       // Sync banner
-      const pb = page.bannerUrl || '';
-      const pbt = page.bannerThumbUrl || '';
-      if ((ev.bannerUrl || '') !== pb) {
+      const pb = page.bannerUrl || "";
+      const pbt = page.bannerThumbUrl || "";
+      if ((ev.bannerUrl || "") !== pb) {
         ev.bannerUrl = pb;
         changed = true;
       }
-      if ((ev.bannerThumbUrl || '') !== pbt) {
+      if ((ev.bannerThumbUrl || "") !== pbt) {
         ev.bannerThumbUrl = pbt;
         changed = true;
       }
@@ -163,14 +164,12 @@ app.put('/pages/:id', requireDM, async (req, res) => {
         const wd = page.worldDate;
         // Copy structured world date into event start fields
         const nextEra = wd.eraId || null;
-        const nextYear = typeof wd.year === 'number' ? wd.year : null;
+        const nextYear = typeof wd.year === "number" ? wd.year : null;
         const nextMonth =
-          typeof wd.monthIndex === 'number' ? wd.monthIndex : null;
-        const nextDay = typeof wd.day === 'number' ? wd.day : null;
-        const nextHour =
-          typeof wd.hour === 'number' ? wd.hour : null;
-        const nextMinute =
-          typeof wd.minute === 'number' ? wd.minute : null;
+          typeof wd.monthIndex === "number" ? wd.monthIndex : null;
+        const nextDay = typeof wd.day === "number" ? wd.day : null;
+        const nextHour = typeof wd.hour === "number" ? wd.hour : null;
+        const nextMinute = typeof wd.minute === "number" ? wd.minute : null;
         if (
           ev.startEraId !== nextEra ||
           ev.startYear !== nextYear ||
@@ -190,7 +189,7 @@ app.put('/pages/:id', requireDM, async (req, res) => {
           ev.endYear = null;
           ev.endMonthIndex = null;
           ev.endDay = null;
-          ev.endDate = '';
+          ev.endDate = "";
 
           // Format startDate string using time system if available
           if (tsConfig) {
@@ -199,7 +198,7 @@ app.put('/pages/:id', requireDM, async (req, res) => {
               nextEra,
               nextYear,
               nextMonth,
-              nextDay
+              nextDay,
             );
           }
           changed = true;
@@ -223,48 +222,48 @@ app.put('/pages/:id', requireDM, async (req, res) => {
           ev.endYear = null;
           ev.endMonthIndex = null;
           ev.endDay = null;
-          ev.startDate = '';
-          ev.endDate = '';
+          ev.startDate = "";
+          ev.endDate = "";
           changed = true;
         }
       }
       if (changed) {
         await ev.save();
         console.log(
-          `Event ${ev._id} synced. startDate: "${ev.startDate}", startYear: ${ev.startYear}, startMonthIndex: ${ev.startMonthIndex}, startDay: ${ev.startDay}`
+          `Event ${ev._id} synced. startDate: "${ev.startDate}", startYear: ${ev.startYear}, startMonthIndex: ${ev.startMonthIndex}, startDay: ${ev.startDay}`,
         );
       }
     }
   } catch (propErr) {
-    console.warn('Failed to propagate page changes to events:', propErr);
+    console.warn("Failed to propagate page changes to events:", propErr);
   }
   res.json(page);
 });
 
 // Delete a page. Requires DM role. Also clear pageId on events referencing this page.
-app.delete('/pages/:id', requireDM, async (req, res) => {
+router.delete("/pages/:id", requireDM, async (req, res) => {
   const { id } = req.params;
   const page = await Page.findByIdAndDelete(id);
-  if (!page) return res.status(404).json({ error: 'Page not found' });
+  if (!page) return res.status(404).json({ error: "Page not found" });
   // Unlink events referencing this page
-  await Event.updateMany({ pageId: id }, { $unset: { pageId: '' } });
+  await Event.updateMany({ pageId: id }, { $unset: { pageId: "" } });
   res.json({ success: true });
 });
 
 // Update page order for a specific type (for drag-and-drop reordering)
-app.patch('/pages/reorder/:type', requireDM, async (req, res) => {
+router.patch("/pages/reorder/:type", requireDM, async (req, res) => {
   try {
     const { type } = req.params;
     const { pageIds } = req.body; // Array of page IDs in desired order
 
     if (!Array.isArray(pageIds)) {
-      return res.status(400).json({ error: 'pageIds must be an array' });
+      return res.status(400).json({ error: "pageIds must be an array" });
     }
 
     // Validate page type
-    const validTypes = ['place', 'history', 'myth', 'people', 'campaign'];
+    const validTypes = ["place", "history", "myth", "people", "campaign"];
     if (!validTypes.includes(type)) {
-      return res.status(400).json({ error: 'Invalid page type' });
+      return res.status(400).json({ error: "Invalid page type" });
     }
 
     // Update order field for each page
@@ -278,7 +277,9 @@ app.patch('/pages/reorder/:type', requireDM, async (req, res) => {
     await Page.bulkWrite(updates);
     res.json({ success: true, updated: pageIds.length });
   } catch (err) {
-    console.error('Error updating page order:', err);
-    res.status(500).json({ error: 'Failed to update page order' });
+    console.error("Error updating page order:", err);
+    res.status(500).json({ error: "Failed to update page order" });
   }
 });
+
+export default router;

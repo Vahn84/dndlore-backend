@@ -1,4 +1,5 @@
-import { app, requireExternal } from '../../server.js';
+import express from 'express';
+import { Event, Page } from '../../models.js';
 
 // -----------------------------------------------------------------------------
 // External endpoints for automation
@@ -16,8 +17,10 @@ function requireExternal(req, res, next) {
   next();
 }
 
+const router = express.Router();
+
 // Create an event via external automation. Expects the same fields as /events.
-app.post('/external/events', requireExternal, async (req, res) => {
+router.post('/external/events', requireExternal, async (req, res) => {
   const {
     title,
     type = 'other',
@@ -50,7 +53,7 @@ app.post('/external/events', requireExternal, async (req, res) => {
 });
 
 // Create a page via external automation. Expects title, type, bannerUrl, content, hidden, draft.
-app.post('/external/pages', requireExternal, async (req, res) => {
+router.post('/external/pages', requireExternal, async (req, res) => {
   const {
     title,
     type,
@@ -71,3 +74,5 @@ app.post('/external/pages', requireExternal, async (req, res) => {
   });
   res.json(page);
 });
+
+export default router;

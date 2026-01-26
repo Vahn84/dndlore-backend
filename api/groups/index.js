@@ -1,10 +1,13 @@
-import { app, requireDM } from '../../server.js';
-import { Group } from '../../models.js';
+import express from 'express';
+import { requireDM } from '../../middleware/auth.js';
+import { Group, Event } from '../../models.js';
 
 // -----------------------------------------------------------------------------
 // Gruppi
 // -----------------------------------------------------------------------------
-app.get('/groups', async (req, res) => {
+const router = express.Router();
+
+router.get('/groups', async (req, res) => {
   let groups = await Group.find().sort({ order: 1 });
   // Ensure at least one defaultSelected group exists for clients that rely on a default
   if (!groups.some((g) => g.defaultSelected)) {
@@ -20,7 +23,7 @@ app.get('/groups', async (req, res) => {
   res.json(groups);
 });
 
-app.put('/groups', requireDM, async (req, res) => {
+router.put('/groups', requireDM, async (req, res) => {
   const { newOrder } = req.body;
   await Promise.all(
     newOrder.map((id, index) =>
@@ -30,7 +33,7 @@ app.put('/groups', requireDM, async (req, res) => {
   res.json({ success: true });
 });
 
-app.post('/groups', requireDM, async (req, res) => {
+router.post('/groups', requireDM, async (req, res) => {
   const {
     name,
     color,
@@ -55,7 +58,7 @@ app.post('/groups', requireDM, async (req, res) => {
   res.json(group);
 });
 
-app.put('/groups/:id', requireDM, async (req, res) => {
+router.put('/groups/:id', requireDM, async (req, res) => {
   const { id } = req.params;
   const {
     name,
@@ -88,7 +91,7 @@ app.put('/groups/:id', requireDM, async (req, res) => {
 });
 
 // Delete a group and cascade delete its events. Requires DM role.
-app.delete('/groups/:id', requireDM, async (req, res) => {
+router.delete('/groups/:id', requireDM, async (req, res) => {
   const { id } = req.params;
   const group = await Group.findByIdAndDelete(id);
   if (!group) return res.status(404).json({ error: 'Group not found' });
@@ -96,3 +99,5 @@ app.delete('/groups/:id', requireDM, async (req, res) => {
   await Event.deleteMany({ groupId: id });
   res.json({ success: true });
 });
+
+export default router;

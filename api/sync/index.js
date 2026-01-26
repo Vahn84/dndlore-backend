@@ -1,12 +1,17 @@
-import { app, requireDM } from '../../server.js';
-import { Page } from '../../models.js';
+import express from "express";
+import { requireDM } from "../../middleware/auth.js";
+import { formatEventDate } from "../../utils/time.js";
+import { Page, User, Group, Event, TimeSystem } from "../../models.js";
+import { refreshGoogleToken } from "../auth/index.js";
+import { fetchTimeout } from "../../utils/fetch.js";
 
 //SYNC
+const router = express.Router();
 
 // -----------------------------------------------------------------------------
 // Sync Step 1: Preview - Fetch and summarize from Google Doc
 // -----------------------------------------------------------------------------
-app.post("/sync/campaign/preview", requireDM, async (req, res) => {
+router.post("/sync/campaign/preview", requireDM, async (req, res) => {
   try {
     let { docId, url, summarize, googleAccessToken } = req.body || {};
 
@@ -214,7 +219,7 @@ app.post("/sync/campaign/preview", requireDM, async (req, res) => {
 // -----------------------------------------------------------------------------
 // Sync Step 1.5: Summarize - Summarize selected date content with OpenAI
 // -----------------------------------------------------------------------------
-app.post("/sync/campaign/summarize", requireDM, async (req, res) => {
+router.post("/sync/campaign/summarize", requireDM, async (req, res) => {
   try {
     const { rawText, sessionDate } = req.body || {};
 
@@ -222,13 +227,17 @@ app.post("/sync/campaign/summarize", requireDM, async (req, res) => {
       return res.status(400).json({ error: "rawText is required" });
     }
 
-    const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-
-    if (!OPENAI_API_KEY) {
-      return res.status(400).json({ error: "OpenAI API key not configured" });
+    const OWUI_MODEL = process.env.OWUI_MODEL || "qwen3-next-80b-a3b-thinking";
+    const OWUI_API_KEY = process.env.OWUI_API_KEY;
+    if (!OWUI_API_KEY) {
+      return res
+        .status(400)
+        .json({ error: "Open WebUI API key (OWUI) not configured" });
     }
 
-    console.log("Summarizing session via OpenAI...");
+    const OWUI_ENDPOINT = process.env.OWUI_ENDPOINT || "http://localhost:3000";
+
+    console.log("Summarizing session via Open WebUI...");
     let summary = rawText;
 
     try {
@@ -238,115 +247,62 @@ app.post("/sync/campaign/summarize", requireDM, async (req, res) => {
         Math.min(6000, Math.ceil(targetWords * 2.5)),
       );
       const headers = {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        Authorization: `Bearer ${OWUI_API_KEY}`,
         "Content-Type": "application/json",
       };
-      if (process.env.OPENAI_ORG_ID)
-        headers["OpenAI-Organization"] = process.env.OPENAI_ORG_ID;
-      if (process.env.OPENAI_PROJECT_ID)
-        headers["OpenAI-Project"] = process.env.OPENAI_PROJECT_ID;
 
-      // Extract explicit dialogue candidates from notes to prevent invention
-      const extractDialogues = (src) => {
-        const lines = String(src).split(/\r?\n/);
-        const map = new Map([
-          ["O:", "Owen"],
-          ["A:", "Ardi"],
-          ["F:", "Farek"],
-          ["BRUNO>", "Bruno"],
-          ["BRUNO:", "Bruno"],
-          ["OWEN:", "Owen"],
-          ["ARDI:", "Ardi"],
-          ["FAREK:", "Farek"],
-          ["LYSARA:", "Lysara"],
-          ["OBYRON:", "Obyron"],
-          ["RAIDAN:", "Raidan"],
-        ]);
-        const found = [];
-        for (const raw of lines) {
-          const line = raw.trim();
-          if (!line) continue;
-          let matched = false;
-          for (const [mk, name] of map.entries()) {
-            if (line.startsWith(mk)) {
-              let content = line.slice(mk.length).trim();
-              if (content)
-                found.push({
-                  speaker: name,
-                  text: content,
-                });
-              matched = true;
-              break;
-            }
-          }
-          if (matched) continue;
-          const m = line.match(
-            /^(Owen|Ardi|Farek|Bruno|Lysara|Obyron|Raidan)\s*:\s*(.+)$/i,
-          );
-          if (m) {
-            found.push({
-              speaker: m[1][0].toUpperCase() + m[1].slice(1).toLowerCase(),
-              text: m[2].trim(),
-            });
-          }
-        }
-        const uniq = [];
-        const seen = new Set();
-        for (const d of found) {
-          const key = d.speaker + "|" + d.text;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          uniq.push({
-            speaker: d.speaker,
-            text: d.text.slice(0, 200),
-          });
-        }
-        return uniq.slice(0, 12);
-      };
-      const allowed = extractDialogues(rawText);
-      const allowedList = allowed.length
-        ? `\n\nUsa SOLO queste battute esplicite se vuoi inserire dialoghi (altrimenti ometti i dialoghi se non bastano):\n` +
-          allowed.map((d) => `- ${d.speaker}: ${d.text}`).join("\n")
-        : "";
+      console.log("max tokens:", maxTokens);
 
-      const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+      const timeout = 240000;
+      const controller = new AbortController();
+      const resp = await fetchTimeout(`${OWUI_ENDPOINT}/chat/completions`, timeout, {
+        signal: controller.signal,
         method: "POST",
         headers,
         body: JSON.stringify({
-          model: "gpt-4o-mini",
+          model: OWUI_MODEL,
           messages: [
             {
               role: "system",
-              content: `Cronista D&D. Resoconto narrativo in Italiano, 4–7 paragrafi, stile evocativo. NON INVENTARE. Solo fatti/dialoghi dalle note. Battute tra "" con nome (O:→Owen, A:→Ardi, F:→Farek, BRUNO:→Bruno). No preamboli. ~${targetWords} parole.`,
+              content:
+                "Elabora un riassunto da queste note dell'ultima sessione",
             },
-            {
-              role: "user",
-              content: `Trasforma note in resoconto. SOLO dialoghi espliciti (O:→Owen, A:→Ardi, F:→Farek, BRUNO:→Bruno). NON INVENTARE.${allowedList}\n\n${rawText}`,
-            },
+            { role: "user", content: rawText },
           ],
-          temperature: 0.7,
+          temperature: 0.5,
           max_completion_tokens: maxTokens,
         }),
       });
+      // Check if response is HTML (likely an error page)
+      const contentType = resp.headers.get('content-type') || '';
+      if (contentType.includes('text/html')) {
+        const htmlContent = await resp.text();
+        console.error("Open WebUI returned HTML instead of JSON:", htmlContent);
+        throw new Error(`Open WebUI server returned HTML response. Check if Open WebUI is running at ${OWUI_ENDPOINT}`);
+      }
+
       const data = await resp.json();
+      console.log("OWUI Summary:", data);
       const choice = data?.choices?.[0];
       const finishReason = choice?.finish_reason;
       const content = choice?.message?.content?.trim() || choice?.text?.trim();
 
       if (finishReason === "length") {
         console.warn(
-          `OpenAI response was truncated. Consider increasing max_completion_tokens (current: ${maxTokens})`,
+          `Open WebUI response was truncated. Consider increasing max_completion_tokens (current: ${maxTokens})`,
         );
       }
 
       if (content) summary = content;
     } catch (e) {
-      console.error("OpenAI call failed", e);
-      return res.status(500).json({ error: "OpenAI summarization failed" });
+      console.error("Open WebUI call failed", e);
+      return res.status(500).json({ error: "Open WebUI summarization failed" });
     }
 
+    // Return the raw or summarized text
+    const resultSummary = summary;
     res.json({
-      summary,
+      summary: resultSummary,
       sessionDate,
       suggestedTitle: sessionDate ? `Session ${sessionDate}` : "Session",
     });
@@ -359,7 +315,7 @@ app.post("/sync/campaign/summarize", requireDM, async (req, res) => {
 // -----------------------------------------------------------------------------
 // Sync Step 2: Create - Save the page and event with custom fields
 // -----------------------------------------------------------------------------
-app.post("/sync/campaign/create", requireDM, async (req, res) => {
+router.post("/sync/campaign/create", requireDM, async (req, res) => {
   try {
     const { summary, sessionDate, title, subtitle, worldDate, bannerUrl } =
       req.body || {};
@@ -493,7 +449,7 @@ app.post("/sync/campaign/create", requireDM, async (req, res) => {
 // -----------------------------------------------------------------------------
 // Sync (Legacy): import latest session from Google Doc, summarize, create draft campaign page
 // -----------------------------------------------------------------------------
-app.post("/sync/campaign/from-google", requireDM, async (req, res) => {
+router.post("/sync/campaign/from-google", requireDM, async (req, res) => {
   try {
     let {
       docId,
@@ -664,95 +620,31 @@ app.post("/sync/campaign/from-google", requireDM, async (req, res) => {
     }
 
     const rawText = chosen.content.join("\n").trim();
-    const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+    // Use Open WebUI for summarisation – fallback to raw text if not configured
+    const OWUI_API_KEY = process.env.OWUI;
     let summary = rawText;
-    if (OPENAI_API_KEY && doSummarize) {
-      console.log("Summarizing session via OpenAI...");
+    if (OWUI_API_KEY && doSummarize) {
+      console.log("Summarizing session via Open WebUI...");
       try {
-        // Determine desired length (default to a rich narrative recap)
+        // Desired length – honour any custom target word count
         const targetWords = Math.max(
           300,
           Math.min(900, Number(summaryTargetWords) || 520),
         );
-        // Increase token multiplier significantly for Italian (longer words), formatting, and narrative style
         const maxTokens = Math.max(
           800,
           Math.min(6000, Math.ceil(targetWords * 2.5)),
         );
         const headers = {
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          Authorization: `Bearer ${OWUI_API_KEY}`,
           "Content-Type": "application/json",
         };
-        if (process.env.OPENAI_ORG_ID)
-          headers["OpenAI-Organization"] = process.env.OPENAI_ORG_ID;
-        if (process.env.OPENAI_PROJECT_ID)
-          headers["OpenAI-Project"] = process.env.OPENAI_PROJECT_ID;
+        // Optional custom endpoint (useful for self‑hosted instances)
+        const WEBUI_ENDPOINT =
+          process.env.WEBUI_ENDPOINT || "https://api.openwebui.com";
 
-        // Extract explicit dialogue candidates from notes to prevent invention
-        const extractDialogues = (src) => {
-          const lines = String(src).split(/\r?\n/);
-          const map = new Map([
-            ["O:", "Owen"],
-            ["A:", "Ardi"],
-            ["F:", "Farek"],
-            ["BRUNO>", "Bruno"],
-            ["BRUNO:", "Bruno"],
-            ["OWEN:", "Owen"],
-            ["ARDI:", "Ardi"],
-            ["FAREK:", "Farek"],
-            ["LYSARA:", "Lysara"],
-            ["OBYRON:", "Obyron"],
-            ["RAIDAN:", "Raidan"],
-          ]);
-          const found = [];
-          for (const raw of lines) {
-            const line = raw.trim();
-            if (!line) continue;
-            let matched = false;
-            for (const [mk, name] of map.entries()) {
-              if (line.startsWith(mk)) {
-                let content = line.slice(mk.length).trim();
-                if (content)
-                  found.push({
-                    speaker: name,
-                    text: content,
-                  });
-                matched = true;
-                break;
-              }
-            }
-            if (matched) continue;
-            const m = line.match(
-              /^(Owen|Ardi|Farek|Bruno|Lysara|Obyron|Raidan)\s*:\s*(.+)$/i,
-            );
-            if (m) {
-              found.push({
-                speaker: m[1][0].toUpperCase() + m[1].slice(1).toLowerCase(),
-                text: m[2].trim(),
-              });
-            }
-          }
-          // Deduplicate and clip
-          const uniq = [];
-          const seen = new Set();
-          for (const d of found) {
-            const key = d.speaker + "|" + d.text;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            uniq.push({
-              speaker: d.speaker,
-              text: d.text.slice(0, 200),
-            });
-          }
-          return uniq.slice(0, 12);
-        };
-        const allowed = extractDialogues(rawText);
-        const allowedList = allowed.length
-          ? `\n\nUsa SOLO queste battute esplicite se vuoi inserire dialoghi (altrimenti ometti i dialoghi se non bastano):\n` +
-            allowed.map((d) => `- ${d.speaker}: ${d.text}`).join("\n")
-          : "";
-
-        const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+        // Send the raw user prompt unchanged – no dialogue extraction
+        const resp = await fetch(`${WEBUI_ENDPOINT}/v1/chat/completions`, {
           method: "POST",
           headers,
           body: JSON.stringify({
@@ -760,11 +652,11 @@ app.post("/sync/campaign/from-google", requireDM, async (req, res) => {
             messages: [
               {
                 role: "system",
-                content: `Sei un cronista di sessioni D&D. Scrivi un resoconto narrativo in Italiano in 4–7 paragrafi, con una prosa evocativa, in stile Patrick Rothfuss, ma leggibile. NON INVENTARE NULLA: nessun fatto, nessun dialogo. Riporta SOLO ciò che è presente nelle note. Se compaiono battute dirette (righe con marcatori come O:, A:, F:, BRUNO>), riportale tra virgolette “”, con attribuzione esplicita mappando i marcatori a nomi (Owen, Ardi, Farek, Bruno, Lysara, Obyron, Raidan). Se le battute dirette sono meno di tre, includi solo quelle esistenti; se non ce ne sono, non aggiungere dialoghi. Non parafrasare testo non dialogico come se fosse dialogo. Mantieni i nomi e i dettagli chiave (luoghi, magie, ferite, mosse). Evita preamboli e conclusioni meta; entra subito nell’azione. Preferisci frasi non troppo lunghe. Lunghezza desiderata: ~${targetWords} parole.`,
+                content: `Cronista D&D. Resoconto narrativo in Italiano, 4–7 paragrafi, stile evocativo. NON INVENTARE. Solo fatti/dialoghi dalle note. Battute tra "" con nome (O:→Owen, A:→Ardi, F:→Farek, BRUNO:→Bruno). No preamboli. ~${targetWords} parole.`,
               },
               {
                 role: "user",
-                content: `Trasforma le seguenti note in un resoconto narrativo coerente. Riporta SOLO dialoghi che appaiono esplicitamente nelle note, fedeli o con minime correzioni di punteggiatura, con il nome del parlante (es. Owen: “…”). Se nelle note compaiono marcatori come O:, A:, F:, BRUNO>, mappali a Owen, Ardi, Farek, Bruno. Se non ci sono battute dirette, non inserirne. NON INVENTARE fatti o battute. Mantieni l’atmosfera e i nomi.${allowedList}\n\n${rawText}`,
+                content: rawText,
               },
             ],
             temperature: 0.7,
@@ -777,16 +669,15 @@ app.post("/sync/campaign/from-google", requireDM, async (req, res) => {
         const content =
           choice?.message?.content?.trim() || choice?.text?.trim();
 
-        // Log if the response was truncated
         if (finishReason === "length") {
           console.warn(
-            `OpenAI response was truncated. Consider increasing max_completion_tokens (current: ${maxTokens})`,
+            `Open WebUI response was truncated. Consider increasing max_completion_tokens (current: ${maxTokens})`,
           );
         }
 
         if (content) summary = content;
       } catch (e) {
-        console.error("OpenAI call failed", e);
+        console.error("OpenWebUI call failed", e);
       }
     }
 
@@ -866,3 +757,5 @@ app.post("/sync/campaign/from-google", requireDM, async (req, res) => {
     res.status(500).json({ error: "Internal error" });
   }
 });
+
+export default router;

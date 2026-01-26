@@ -1,15 +1,20 @@
-import { app, requireDM } from '../../server.js';
+import express from 'express';
 import { Asset, Page, Event } from '../../models.js';
+import { requireDM } from '../../middleware/auth.js';
 import multer from 'multer';
 import sharp from 'sharp';
 import fs from 'fs';
 import path from 'path';
+import { UPLOADS_PATH } from '../../utils/uploads.js';
+
+const router = express.Router();
+const upload = multer({ dest: UPLOADS_PATH });
 
 // -----------------------------------------------------------------------------
 // Asset library (Asset Manager)
 // -----------------------------------------------------------------------------
 // List assets (no auth required to read; adjust to your needs)
-app.get('/assets', async (req, res) => {
+router.get('/assets', async (req, res) => {
   try {
     const assets = await Asset.find().sort({ createdAt: -1 });
     res.json(assets);
@@ -20,7 +25,7 @@ app.get('/assets', async (req, res) => {
 });
 
 // Create an asset. Accepts either a multipart file field named `file` or a JSON body with { url }
-app.post('/assets', requireDM, upload.single('file'), async (req, res) => {
+router.post('/assets', requireDM, upload.single('file'), async (req, res) => {
   try {
     let url = null;
     let bannerThumbUrl = null;
@@ -80,7 +85,7 @@ app.post('/assets', requireDM, upload.single('file'), async (req, res) => {
 });
 
 // Delete an asset (and remove underlying file if it is in our uploads folder)
-app.delete('/assets/:id', requireDM, async (req, res) => {
+router.delete('/assets/:id', requireDM, async (req, res) => {
   try {
     const { id } = req.params;
     const asset = await Asset.findByIdAndDelete(id);
@@ -174,7 +179,7 @@ app.delete('/assets/:id', requireDM, async (req, res) => {
 });
 
 // Update asset folder location
-app.patch('/assets/:id/move', requireDM, async (req, res) => {
+router.patch('/assets/:id/move', requireDM, async (req, res) => {
   try {
     const { id } = req.params;
     const { folderId } = req.body; // can be null to move to root
@@ -193,3 +198,4 @@ app.patch('/assets/:id/move', requireDM, async (req, res) => {
     res.status(500).json({ error: 'Internal error' });
   }
 });
+export default router;

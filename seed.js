@@ -4,8 +4,7 @@ import { User, Group, Page, Event, TimeSystem } from './models.js';
 
 async function seed() {
 	const MONGO_URI =
-		process.env.MONGO_URI ||
-		'mongodb+srv://fabiocingolani84_db_user:J4myJn6z59xHGXc@dndlore.njjnky5.mongodb.net/?appName=DndLore';
+		process.env.MONGO_URI
 	await mongoose.connect(MONGO_URI, {dbName: 'data'});
 	console.log('Connected to MongoDB');
 	// Cancella dati esistenti
