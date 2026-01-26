@@ -1,9 +1,15 @@
 import { TimeSystem } from "../models.js";
 import { formatEventDate } from "../utils/time.js";
 
+const LIGHTRAG_ENDPOINT =
+  process.env.NODE_ENV === "development"
+    ? process.env.LIGHTRAG_ENDPOINT
+    : `${process.env.FRONTEND_ORIGIN}/lightrag`;
+const LIGHTRAG_API_KEY = process.env.LIGHTRAG_API_KEY;
+
 export const sendToLightRag = async (page) => {
   try {
-    const lightRagBaseUrl = process.env.LIGHTRAG_ENDPOINT;
+    const lightRagBaseUrl = LIGHTRAG_ENDPOINT;
     const apiKey = process.env.LIGHTRAG_API_KEY;
 
     if (!lightRagBaseUrl || !apiKey) {
@@ -133,7 +139,7 @@ const findDocumentByFilePath = async ({
 
 export const checkDocumentExists = async (id) => {
   try {
-    const lightRagBaseUrl = process.env.LIGHTRAG_ENDPOINT;
+    const lightRagBaseUrl = LIGHTRAG_ENDPOINT;
     const apiKey = process.env.LIGHTRAG_API_KEY;
 
     if (!lightRagBaseUrl || !apiKey) {
