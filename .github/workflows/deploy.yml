@@ -90,7 +90,7 @@ jobs:
 
             # Start new backend container with host network to fix Alpine DNS/SRV issues
             # Host network shares the NAS's DNS resolvers which work correctly
-            docker run --name dndlore-backend -d --restart unless-stopped \
+            docker run -d --name dndlore-backend --restart unless-stopped \
               --network host \
               -e NODE_ENV=production -e PORT="$PORT" \
               -e FRONTEND_ORIGIN='${{ secrets.FRONTEND_ORIGIN }}' \
@@ -106,10 +106,10 @@ jobs:
               -e OPENAI_API_KEY='${{ secrets.OPENAI_API_KEY }}' \
               -e EXTERNAL_API_KEY='${{ secrets.EXTERNAL_API_KEY }}' \
               -e OWUI_API_KEY='${{ secrets.OWUI_API_KEY }}' \
-              -e OWUI_ENDPOINT='${{ secrets.OWUI_ENDPOINT }}'
+              -e OWUI_ENDPOINT='${{ secrets.OWUI_ENDPOINT }}' \
               -e OWUI_MODEL='${{ secrets.OWUI_MODEL }}' \
-              -e LIGHTRAG_API_KEY='${{ secrets.LIGHTRAG_API_KEY }}'
-              -e LIGHTRAG_ENDPOINT='${{ secrets.LIGHTRAG_ENDPOINT }}'
+              -e LIGHTRAG_API_KEY='${{ secrets.LIGHTRAG_API_KEY }}' \
+              -e LIGHTRAG_ENDPOINT='${{ secrets.LIGHTRAG_ENDPOINT }}' \
               -v "$DEPLOY_DIR/uploads":/app/uploads \
               ghcr.io/${{ env.OWNER_LC }}/dndlore-backend:latest
 
