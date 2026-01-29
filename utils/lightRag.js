@@ -66,6 +66,7 @@ export const sendToLightRag = async (page) => {
 
       if (worldDate) {
         fileSource = `${page.type} - ${fileSource} - (${worldDate})`;
+        contentText = `${worldDate} - ${contentText}`
       }
     }
 

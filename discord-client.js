@@ -60,6 +60,8 @@ class DiscordClient {
         intents: [
           GatewayIntentBits.Guilds,
           GatewayIntentBits.GuildScheduledEvents,
+          GatewayIntentBits.GuildMessages,
+          GatewayIntentBits.MessageContent,
         ],
       });
 
@@ -153,6 +155,172 @@ class DiscordClient {
       return voiceChannels;
     } catch (error) {
       console.error("Failed to fetch Discord voice channels:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch all forum channels in the configured guild
+   * @returns {Promise<Array<{id: string, name: string}>>}
+   */
+  async getForumChannels() {
+    try {
+      const guild = await this.getGuild();
+      const channels = await guild.channels.fetch();
+      console.log(channels);
+      // Filter to forum channels only (type 15 = GUILD_FORUM)
+      const forumChannels = channels
+        .filter((channel) => channel.type === 15)
+        .map((channel) => ({
+          id: channel.id,
+          name: channel.name,
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      return forumChannels;
+    } catch (error) {
+      console.error("Failed to fetch Discord forum channels:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch all topics (posts) in a forum channel
+   * @param {string} channelId - The ID of the forum channel
+   * @returns {Promise<Array<{id: string, title: string, author: {id: string, username: string}, content: string, createdAt: Date, updatedAt: Date}>>}
+   */
+  async getForumTopics(channelId) {
+    try {
+      const guild = await this.getGuild();
+      const channel = await guild.channels.fetch(channelId);
+
+      if (!channel || channel.type !== 15) {
+        throw new Error("Channel not found or not a forum channel");
+      }
+      console.log(channel.name);
+      // Get all threads in the forum
+      const threads = await channel.threads.fetch();
+      console.log(threads);
+
+      if (!threads || !threads.first) {
+        return []; // Return empty array if no threads
+      }
+
+      // Convert Collection to array and map
+      return threads.map((thread) => ({
+        id: thread.id,
+        title: thread.name,
+        author: {
+          id: thread.ownerId,
+          username: "Unknown User", // Will be populated in the API endpoint
+        },
+        content: thread.starterMessage?.content || "",
+        createdAt: thread.createdAt,
+        updatedAt: thread.lastMessageTimestamp || thread.createdAt,
+      }));
+    } catch (error) {
+      console.error("Failed to fetch forum topics:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch detailed information about a specific forum topic including all posts
+   * @param {string} threadId - The ID of the thread/topic
+   * @returns {Promise<{id: string, title: string, author: {id: string, username: string}, content: string, createdAt: Date, updatedAt: Date, posts: Array<{id: string, author: {id: string, username: string}, content: string, createdAt: Date}>}>}
+   */
+  async getForumTopicDetails(threadId) {
+    try {
+      const thread = await this.client.channels.fetch(threadId);
+
+      if (!thread || !thread.isThread()) {
+        throw new Error("Thread not found or not a valid thread");
+      }
+
+      // Get the first message (starter message)
+      const starterMessage = await thread.messages.fetch(thread.id);
+
+      // Get all messages in the thread
+      const allMessages = await thread.messages.fetch();
+
+      // Map messages to posts (excluding the starter message which is already handled)
+      const posts = allMessages
+        .filter((msg) => msg.id !== thread.id)
+        .map((msg) => ({
+          id: msg.id,
+          author: {
+            id: msg.author.id,
+            username: msg.author.username,
+          },
+          content: msg.content,
+          createdAt: msg.createdAt,
+        }));
+
+      return {
+        id: thread.id,
+        title: thread.name,
+        author: {
+          id: thread.ownerId,
+          username: "Unknown User", // Will be populated in the API endpoint
+        },
+        content: starterMessage?.content || "",
+        createdAt: thread.createdAt,
+        updatedAt: thread.lastMessageTimestamp || thread.createdAt,
+        posts: posts,
+      };
+    } catch (error) {
+      console.error("Failed to fetch forum topic details:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch all posts in a specific forum topic
+   * @param {string} threadId - The ID of the thread/topic
+   * @returns {Promise<Array<{id: string, author: {id: string, username: string}, content: string, createdAt: Date}>>}
+   */
+  async getForumTopicPosts(threadId) {
+    try {
+      const thread = await this.client.channels.fetch(threadId);
+
+      if (!thread || !thread.isThread()) {
+        throw new Error("Thread not found or not a valid thread");
+      }
+
+      // Get all messages in the thread
+      const messages = await thread.messages.fetch();
+
+      return messages.map((msg) => ({
+        id: msg.id,
+        author: {
+          id: msg.author.id,
+          username: msg.author.username,
+        },
+        content: msg.content,
+        createdAt: msg.createdAt,
+      }));
+    } catch (error) {
+      console.error("Failed to fetch forum topic posts:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch user information by ID
+   * @param {string} userId - The ID of the user
+   * @returns {Promise<{id: string, username: string, discriminator: string, avatar?: string}>}
+   */
+  async getUserInfo(userId) {
+    try {
+      const user = await this.client.users.fetch(userId);
+      return {
+        id: user.id,
+        username: user.username,
+        discriminator: user.discriminator,
+        avatar: user.avatar ? `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png` : null,
+      };
+    } catch (error) {
+      console.error("Failed to fetch user info:", error);
       throw error;
     }
   }
@@ -327,9 +495,13 @@ class DiscordClient {
 
 // Export singleton instance
 const discordClient = new DiscordClient();
-try {
-  await discordClient.connect();
-} catch (error) {
-  console.error("Discord bot initialization failed:", error);
-}
+
 export default discordClient;
+
+export async function initializeDiscordClient() {
+  try {
+    await discordClient.connect();
+  } catch (error) {
+    console.error("Discord bot initialization failed:", error);
+  }
+}

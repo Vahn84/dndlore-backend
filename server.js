@@ -10,6 +10,7 @@ import mongoose from "mongoose";
 import { UPLOADS_PATH } from "./utils/uploads.js";
 import { requireDM } from "./middleware/auth.js";
 import apiRouter from "./api/index.js";
+import { initializeDiscordClient } from "./discord-client.js";
 // Add this debug code to your lightRag.js file temporarily:
 
 // Carica variabili d'ambiente con valori di default
@@ -97,13 +98,17 @@ fs.mkdirSync(UPLOADS_PATH, { recursive: true });
 app.use("/uploads", express.static(UPLOADS_PATH));
 
 // Register API routes under /api prefix
-app.use(apiRouter);
+if (process.env.NODE_ENV === "production") {
+  app.use(apiRouter);
 
-
+} else {
+  app.use('/api',apiRouter);
+}
 
 // Avvio server
 app.listen(PORT, async () => {
   console.log(`Backend listening on port ${PORT}`);
+  await initializeDiscordClient();
 });
 
 export { app };
