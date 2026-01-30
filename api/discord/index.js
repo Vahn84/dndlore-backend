@@ -313,7 +313,7 @@ router.get(
  * Create a Discord scheduled event
  * Body: { title, description?, bannerUrl?, dateTimeUtc, channelId, syncToCalendar?, calendarId? }
  */
-router.post("/integrations/discord/events", requireAuth, checkDiscordClient(), async (req, res) => {
+router.post("/integrations/discord/events", requireDM, checkDiscordClient(), async (req, res) => {
   try {
     const {
       title,
