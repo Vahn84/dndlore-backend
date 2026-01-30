@@ -14,7 +14,7 @@ const router = express.Router();
  * GET /integrations/google/calendars
  * Fetch user's Google Calendar list
  */
-router.get("/integrations/google/calendars", requireAuth, async (req, res) => {
+router.get("/integrations/google/calendars", requireDM, async (req, res) => {
   try {
     // JWT payload stores user id as `id` (see /auth/google/callback), not `userId`
     const user = await User.findById(req.user.id);
@@ -93,7 +93,7 @@ router.get("/integrations/google/calendars", requireAuth, async (req, res) => {
  * GET /integrations/discord/channels
  * Fetch all text channels from the configured Discord guild
  */
-router.get("/integrations/discord/channels", requireAuth, checkDiscordClient(), async (req, res) => {
+router.get("/integrations/discord/channels", requireDM, checkDiscordClient(), async (req, res) => {
   try {
     const channels = await discordClient.getTextChannels();
     res.json(channels);
@@ -112,7 +112,7 @@ router.get("/integrations/discord/channels", requireAuth, checkDiscordClient(), 
  */
 router.get(
   "/integrations/discord/voice-channels",
-  requireAuth,
+  requireDM,
   checkDiscordClient(),
   async (req, res) => {
     try {
@@ -137,7 +137,7 @@ router.get(
  */
 router.get(
   "/integrations/discord/forum-channels",
-  requireAuth,
+  requireDM,
   checkDiscordClient(),
   async (req, res) => {
     try {
@@ -162,6 +162,7 @@ router.get(
  */
 router.get(
   "/integrations/discord/forum/:channelId/topics",
+  requireDM,
   checkDiscordClient(),
   async (req, res) => {
     try {
@@ -216,7 +217,7 @@ router.get(
  */
 router.get(
   "/integrations/discord/forum/topic/:threadId",
-  requireAuth,
+  requireDM,
   checkDiscordClient(),
   async (req, res) => {
     try {
@@ -266,7 +267,7 @@ router.get(
  */
 router.get(
   "/integrations/discord/forum/topic/:threadId/posts",
-  requireAuth,
+  requireDM,
   checkDiscordClient(),
   async (req, res) => {
     try {
