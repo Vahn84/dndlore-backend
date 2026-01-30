@@ -1,5 +1,5 @@
 import express from "express";
-import { requireAuth } from "../../middleware/auth.js";
+import { requireDM } from "../../middleware/auth.js";
 import { User } from "../../models.js";
 import discordClient, {
   initializeDiscordClient,
