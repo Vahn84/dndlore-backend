@@ -17,7 +17,7 @@ router.get("/pages", async (req, res) => {
   if (q && typeof q === "string" && q.trim()) {
     query.title = { $regex: q.trim(), $options: "i" };
   }
-  const lim = Math.min(100, Math.max(1, Number(limit) || 9999));
+  const lim = Math.min(100, Math.max(1, Number(limit) || 50));
   // Sort by order field first (ascending), then by updatedAt (descending) as fallback
   const pages = await Page.find(query).limit(lim).sort({ order: 1 });
   console.log("Pages fetched", pages);
@@ -283,64 +283,3 @@ router.patch("/pages/reorder/:type", requireDM, async (req, res) => {
 });
 
 export default router;
-
-// Import JSON endpoint to create campaign pages from FVTT Journal entries
-router.post("/pages/import",requireDM, async (req, res) => {
-  try {
-    const { pages } = req.body;
-
-    if (!pages || !Array.isArray(pages)) {
-      return res.status(400).json({ error: "Invalid JSON structure. Expected pages array." });
-    }
-
-    const createdPages = [];
-    let orderCounter = 0;
-
-    for (const pageData of pages) {
-      // Extract name and text.content from the FVTT Journal entry structure
-      const pageName = pageData.name || pageData.title?.show || "Untitled Page";
-      const content = pageData.text?.content || "";
-
-      // Create a rich text block from the content
-      const blocks = [];
-      if (content) {
-        blocks.push({
-          type: "rich",
-          rich: {
-            type: "doc",
-            content: [
-              {
-                type: "paragraph",
-                content: [
-                  {
-                    type: "text",
-                    text: content,
-                    marks: []
-                  }
-                ]
-              }
-            ]
-          },
-          plainText: content
-        });
-      }
-
-      // Create the campaign page as a draft
-      const newPage = await Page.create({
-        title: pageName,
-        subtitle: "",
-        type: "campaign",
-        blocks: blocks,
-        draft: true, // Set as draft
-        order: orderCounter++
-      });
-
-      createdPages.push(newPage);
-    }
-
-    res.json({ success: true, pagesCreated: createdPages.length, pages: createdPages });
-  } catch (error) {
-    console.error("Error importing pages:", error);
-    res.status(500).json({ error: "Failed to import pages", details: error.message });
-  }
-});
