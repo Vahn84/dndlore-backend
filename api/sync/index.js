@@ -253,7 +253,7 @@ router.post("/sync/campaign/summarize", requireDM, async (req, res) => {
 
       console.log("max tokens:", maxTokens);
 
-      const timeout = 240000;
+      const timeout = 300000;
       const controller = new AbortController();
       const resp = await fetchTimeout(`${OWUI_ENDPOINT}/chat/completions`, timeout, {
         signal: controller.signal,
