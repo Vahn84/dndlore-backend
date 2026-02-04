@@ -262,7 +262,7 @@ router.post("/sync/campaign/summarize", requireDM, async (req, res) => {
         body: JSON.stringify({
           model: OWUI_MODEL,
           messages: [
-            { role: "user", content: `Elabora un riassunto in italiano, non in altre lingue, non in inglese, in italiano, da queste note dell'ultima sessione: ${rawText}` },
+            { role: "user", content: `Elabora un riassunto da queste note dell'ultima sessione. Il riassunto deve essere in lingua italiana: ${rawText}` },
           ],
           temperature: 0.5,
           max_completion_tokens: maxTokens,
