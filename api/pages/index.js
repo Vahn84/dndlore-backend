@@ -3,6 +3,27 @@ import { requireDM } from "../../middleware/auth.js";
 import { Page, Event, TimeSystem } from "../../models.js";
 import { formatEventDate } from "../../utils/time.js";
 
+/**
+ * Strips HTML tags from text while preserving content
+ * @param {string} html - The HTML string to process
+ * @returns {string} Text content with HTML tags removed
+ */
+function stripHtmlTags(html) {
+  if (!html || typeof html !== "string") return "";
+
+  // Use regex to remove HTML tags but preserve content
+  // This handles both <tag> and </tag> formats, including self-closing tags
+  let stripped = html.replace(/<[^>]*>/g, "");
+
+  // Add space after periods when followed by a letter (handles "Hello.World" → "Hello. World")
+  // Only add space if it's likely a sentence terminator (not version numbers like "1.0")
+  stripped = stripped.replace(/\.([a-zA-Z])/g, ". $1");
+
+  return stripped;
+}
+
+export { stripHtmlTags, extractDateFromContent };
+
 // -----------------------------------------------------------------------------
 // Pagine
 // -----------------------------------------------------------------------------
@@ -18,8 +39,19 @@ router.get("/pages", async (req, res) => {
     query.title = { $regex: q.trim(), $options: "i" };
   }
   const lim = Math.min(100, Math.max(1, Number(limit) || 9999));
-  // Sort by order field first (ascending), then by updatedAt (descending) as fallback
-  const pages = await Page.find(query).limit(lim).sort({ order: 1 });
+
+  // Determine sorting based on type
+  let sort = { order: 1 };
+  if (type === "campaign") {
+    // For campaign pages, sort by sessionDate descending (newest first)
+    // Fallback to order field for pages without sessionDate
+    sort = {
+      sessionDate: -1, // Descending order (newest first)
+      order: 1, // Fallback to order field
+    };
+  }
+
+  const pages = await Page.find(query).limit(lim).sort(sort);
   console.log("Pages fetched", pages);
   res.json(pages);
 });
@@ -28,6 +60,54 @@ router.get("/pages/:id", async (req, res) => {
   const page = await Page.findById(req.params.id);
   if (!page) return res.status(404).json({ error: "Page not found" });
   res.json(page);
+});
+
+/**
+ * GET endpoint to retrieve page content with HTML tags stripped
+ * @param {string} id - The page ID
+ * @returns {object} Page data with stripped HTML content
+ */
+router.get("/pages/:id/strip-html", requireDM, async (req, res) => {
+  try {
+    const page = await Page.findById(req.params.id);
+    if (!page) return res.status(404).json({ error: "Page not found" });
+
+    // Create a deep copy of the page to avoid modifying the original
+    const strippedPage = JSON.parse(JSON.stringify(page));
+
+    // Process each block to strip HTML tags from rich text content
+    if (strippedPage.blocks && Array.isArray(strippedPage.blocks)) {
+      strippedPage.blocks = strippedPage.blocks.map((block) => {
+        if (block.type === "rich" && block.rich) {
+          // Process the rich text content to strip HTML tags
+          if (block.rich.content && Array.isArray(block.rich.content)) {
+            block.rich.content = block.rich.content.map((paragraph) => {
+              if (paragraph.type === "paragraph" && paragraph.content) {
+                paragraph.content = paragraph.content.map((text) => {
+                  if (text.text) {
+                    text.text = stripHtmlTags(text.text);
+                  }
+                  return text;
+                });
+              }
+              return paragraph;
+            });
+          }
+
+          // Also update the plainText field if it exists
+          if (block.plainText) {
+            block.plainText = stripHtmlTags(block.plainText);
+          }
+        }
+        return block;
+      });
+    }
+
+    res.json(strippedPage);
+  } catch (error) {
+    console.error(`Error stripping HTML from page ${req.params.id}:`, error);
+    res.status(500).json({ error: "Failed to process page content" });
+  }
 });
 
 router.post("/pages", requireDM, async (req, res) => {
@@ -285,12 +365,14 @@ router.patch("/pages/reorder/:type", requireDM, async (req, res) => {
 export default router;
 
 // Import JSON endpoint to create campaign pages from FVTT Journal entries
-router.post("/pages/import",requireDM, async (req, res) => {
+router.post("/pages/import", requireDM, async (req, res) => {
   try {
     const { pages } = req.body;
 
     if (!pages || !Array.isArray(pages)) {
-      return res.status(400).json({ error: "Invalid JSON structure. Expected pages array." });
+      return res
+        .status(400)
+        .json({ error: "Invalid JSON structure. Expected pages array." });
     }
 
     const createdPages = [];
@@ -315,13 +397,13 @@ router.post("/pages/import",requireDM, async (req, res) => {
                   {
                     type: "text",
                     text: content,
-                    marks: []
-                  }
-                ]
-              }
-            ]
+                    marks: [],
+                  },
+                ],
+              },
+            ],
           },
-          plainText: content
+          plainText: content,
         });
       }
 
@@ -332,15 +414,223 @@ router.post("/pages/import",requireDM, async (req, res) => {
         type: "campaign",
         blocks: blocks,
         draft: true, // Set as draft
-        order: orderCounter++
+        order: orderCounter++,
       });
 
       createdPages.push(newPage);
     }
 
-    res.json({ success: true, pagesCreated: createdPages.length, pages: createdPages });
+    res.json({
+      success: true,
+      pagesCreated: createdPages.length,
+      pages: createdPages,
+    });
   } catch (error) {
     console.error("Error importing pages:", error);
-    res.status(500).json({ error: "Failed to import pages", details: error.message });
+    res
+      .status(500)
+      .json({ error: "Failed to import pages", details: error.message });
   }
 });
+
+/**
+ * POST endpoint to process campaign pages without subtitles, worldDates, or sessionDates
+ *
+ * This endpoint:
+ * 1. Finds all campaign pages that are missing subtitle, worldDate, or sessionDate
+ * 2. Extracts in-world dates from the text content (format: "28 Decimos 2130 I.E.")
+ * 3. Populates the worldDate field with the extracted date
+ * 4. Strips HTML tags from content using stripHtmlTags function
+ * 5. Finds the previous page by order field and increments its session number
+ * 6. Adds one week to the previous page's sessionDate for the current page
+ * 7. Updates all processed pages with the new data
+ *
+ * @route POST /pages/process-campaign
+ * @requires DM role authentication
+ * @returns {Object} JSON with success status, message, count of processed pages, and array of updated pages
+ */
+router.post("/pages/process-campaign", requireDM, async (req, res) => {
+  try {
+    // Query to find all campaign pages with HTML tags in rich.content.content.text
+    const campaignPagesWithHtml = await Page.find({
+      type: "campaign",
+      "blocks.rich.content.content.text": {
+        $regex: /<[a-z][\s\S]*>/,
+        $options: "i",
+      },
+    }).sort({ sessionDate: 1 });
+
+    console.log(
+      `Found ${campaignPagesWithHtml.length} campaign pages with HTML tags in rich content`,
+    );
+
+    let currentIndex = 0;
+
+    while (currentIndex < campaignPagesWithHtml.length) {
+      const page = campaignPagesWithHtml[currentIndex];
+
+      try {
+        // First strip HTML tags from all text content to ensure clean processing
+        const processedBlocks = JSON.parse(JSON.stringify(page.blocks)); // Deep clone
+        if (processedBlocks && Array.isArray(processedBlocks)) {
+          for (const block of processedBlocks) {
+            if (block.rich) {
+              if (block.rich.content && Array.isArray(block.rich.content)) {
+                for (const content of block.rich.content) {
+                  if (content.text && typeof content.text === "string") {
+                    content.text = stripHtmlTags(content.text);
+                    console.log(`rich: ${content.text}`);
+                  } else if (content.content && content.content[0]?.text) {
+                    content.content[0].text = stripHtmlTags(
+                      content.content[0].text,
+                    );
+                    console.log(`content.text: ${content.content[0].text}`);
+                  }
+                }
+              }
+            }
+            if (block.plainText && typeof block.plainText === "string") {
+              block.plainText = stripHtmlTags(block.plainText);
+              // console.log(`plainText: ${block.plainText}`);
+            }
+          }
+        }
+
+        // Update page with extracted date, incremented session number, and calculated session date
+        const updateData = {
+          blocks: processedBlocks,
+        };
+
+        const updateOperation = await Page.findByIdAndUpdate(
+          page._id,
+          { $set: updateData },
+          { new: true },
+        );
+
+        console.log(`Updated page ${page._id}:`, updateOperation);
+
+        // Update reference page to the newly processed page for next iterations
+      } catch (pageError) {
+        console.error(`Error processing page ${page._id}:`, pageError);
+      }
+
+      currentIndex++;
+    }
+
+    res.json({ code: 200, message: "Campaign processed successfully" });
+  } catch (error) {
+    console.error("Error in process-campaign endpoint:", error);
+    res.status(500).json({
+      error: "Failed to process campaign pages",
+      details: error.message,
+    });
+  }
+});
+
+/**
+ * Extracts date from page content in format "28 Decimos 2130 I.E."
+ *
+ * Searches through rich text blocks and plainText fields for date patterns.
+ * When found, extracts day, month (by name), year, and era abbreviation,
+ * then maps them to the time system configuration.
+ *
+ * @param {Array} blocks - Page blocks containing text content
+ * @returns {Object|null} Extracted worldDate object with eraId, year, monthIndex, day
+ *                         or null if no date pattern is found
+ */
+function extractDateFromContent(blocks, tsConfig) {
+  if (!blocks || !Array.isArray(blocks)) return null;
+
+  // Regex to match date pattern: day month year era (e.g., "28 Decimos 2130 I.E.")
+  const dateRegex = /(\d+)\s+([a-zA-Z]+)\s+(\d+)\s+([a-zA-Z.]+)/;
+
+  // Search through all rich text blocks for date patterns
+  for (const block of blocks) {
+    if (block.type === "rich" && block.rich?.content) {
+      for (const paragraph of block.rich.content) {
+        if (paragraph.type === "paragraph" && paragraph.content) {
+          for (const text of paragraph.content) {
+            if (text.text && typeof text.text === "string") {
+              // Look for date pattern: day month year era (e.g., "28 Decimos 2130 I.E.")
+              // Same regex pattern as above to find date in plainText format
+              const match = text.text.match(dateRegex);
+
+              if (match) {
+                // Extract components: day, month, year, era
+                const [_, dayStr, monthName, yearStr, eraAbbr] = match;
+                let _monthName = monthName;
+                const day = parseInt(dayStr);
+                const year = parseInt(yearStr);
+                if (_monthName === "Decimos") {
+                  _monthName = "Decis";
+                } else if (_monthName === "Primus") {
+                  _monthName = "Primos";
+                }
+                // Find month index by matching month name to time system configuration
+                let monthIndex = null;
+                if (tsConfig?.months) {
+                  const month = tsConfig.months.find(
+                    (m) => m.name.toLowerCase() === _monthName.toLowerCase(),
+                  );
+                  if (month) {
+                    monthIndex = parseInt(month.id) - 1; // Convert to 0-based index
+                  }
+                }
+
+                // Find era ID by matching era abbreviation to time system configuration
+                let eraId = "2";
+
+                return {
+                  eraId,
+                  year,
+                  monthIndex,
+                  day,
+                };
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Also check plainText field for date patterns if rich content doesn't contain a match
+    if (block.plainText && typeof block.plainText === "string") {
+      const match = block.plainText.match(dateRegex);
+
+      if (match) {
+        const [_, dayStr, monthName, yearStr, eraAbbr] = match;
+        const day = parseInt(dayStr);
+        const year = parseInt(yearStr);
+
+        // Find month index from time system
+        let monthIndex = null;
+        if (tsConfig?.months) {
+          const month = tsConfig.months.find(
+            (m) => m.name.toLowerCase() === monthName.toLowerCase(),
+          );
+          if (month) {
+            monthIndex = parseInt(month.id) - 1; // Convert to 0-based index
+          }
+        }
+
+        // Find era ID from abbreviation
+        let eraId = null;
+        if (tsConfig?.eras) {
+          const era = tsConfig.eras.find((e) => e.abbreviation === eraAbbr);
+          if (era) {
+            eraId = era.id;
+          }
+        }
+
+        return {
+          eraId,
+          year,
+          monthIndex,
+          day,
+        };
+      }
+    }
+  }
+
+  return null;
+}

@@ -154,7 +154,7 @@ router.post("/sync/campaign/preview", requireDM, async (req, res) => {
         if (currSection) sections.push(currSection);
         const [_, dd, mm, yyyy] = match;
         currSection = {
-          date: trimmed, // Store as DD.MM.YYYY
+          date: trimmed.replace(/\./g, '/'), // Convert DD.MM.YYYY to DD/MM/YYYY
           content: [],
         };
       } else if (currSection) {
