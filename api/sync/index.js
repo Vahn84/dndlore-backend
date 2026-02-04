@@ -227,7 +227,7 @@ router.post("/sync/campaign/summarize", requireDM, async (req, res) => {
       return res.status(400).json({ error: "rawText is required" });
     }
 
-    const OWUI_MODEL = process.env.OWUI_MODEL || "qwen3-next-80b-a3b-thinking";
+    const OWUI_MODEL = process.env.OWUI_MODEL || "google/gemma-3-27b";
     const OWUI_API_KEY = process.env.OWUI_API_KEY;
     if (!OWUI_API_KEY) {
       return res
@@ -241,10 +241,10 @@ router.post("/sync/campaign/summarize", requireDM, async (req, res) => {
     let summary = rawText;
 
     try {
-      const targetWords = 520;
+      const targetWords = 1000;
       const maxTokens = Math.max(
         800,
-        Math.min(6000, Math.ceil(targetWords * 2.5)),
+        Math.min(8000, Math.ceil(targetWords * 3.5)),
       );
       const headers = {
         Authorization: `Bearer ${OWUI_API_KEY}`,
