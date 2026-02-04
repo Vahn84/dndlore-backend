@@ -262,12 +262,7 @@ router.post("/sync/campaign/summarize", requireDM, async (req, res) => {
         body: JSON.stringify({
           model: OWUI_MODEL,
           messages: [
-            {
-              role: "system",
-              content:
-                "Elabora un riassunto da queste note dell'ultima sessione",
-            },
-            { role: "user", content: rawText },
+            { role: "user", content: `Elabora un riassunto da queste note dell'ultima sessione: ${rawText}` },
           ],
           temperature: 0.5,
           max_completion_tokens: maxTokens,
