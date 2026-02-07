@@ -76,12 +76,11 @@ export function formatEventDate(tsConfig, eraId, year, monthIndex, day) {
 
   let result = format
     .replace(/YYYY/g, String(year))
-    .replace(/MMMM/g, monthName)
-    .replace(/MM/g, String(monthNumber).padStart(2, "0"))
-    .replace(/M/g, String(monthNumber))
     .replace(/D\^/g, ordinal(day))
     .replace(/DD/g, String(day).padStart(2, "0"))
     .replace(/D/g, String(day))
+    .replace(/MMMM/g, monthName)
+    .replace(/MM/g, String(monthNumber).padStart(2, "0"))
     .replace(/\[E\]/g, eraAbbr);
 
   result = result.replace(/\bE\b/g, eraAbbr).trim();
