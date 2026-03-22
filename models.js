@@ -111,6 +111,8 @@ const pageSchema = new mongoose.Schema(
     order: { type: Number, default: 0 },
     // LightRag document name for tracking documents in the system
     lightRagDocumentName: { type: String },
+    // Open WebUI file ID for tracking knowledge base sync status
+    owuiFileId: { type: String },
   },
   { timestamps: true },
 );

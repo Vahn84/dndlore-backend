@@ -362,6 +362,9 @@ router.patch("/pages/reorder/:type", requireDM, async (req, res) => {
   }
 });
 
+import exportKnowledgeRouter from "./export-knowledge.js";
+router.use(exportKnowledgeRouter);
+
 export default router;
 
 // Import JSON endpoint to create campaign pages from FVTT Journal entries

@@ -5,3 +5,13 @@ export const fetchTimeout = (url, ms, { signal, ...options } = {}) => {
   const timeout = setTimeout(() => controller.abort(), ms);
   return promise.finally(() => clearTimeout(timeout));
 };
+
+export async function fetchWithAuth(url, options = {}) {
+  const response = await fetch(url, options);
+  
+  if (!response.ok) {
+    throw new Error(`HTTP error! status: ${response.status}`);
+  }
+  
+  return response;
+}

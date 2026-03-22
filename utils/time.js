@@ -142,3 +142,62 @@ export const defaultTimeSystem = new TimeSystem({
     },
   },
 });
+
+export function formatWorldDate(worldDate, tsConfig) {
+  if (!worldDate || !worldDate.eraId || worldDate.year == null) {
+    return "";
+  }
+
+  const era = tsConfig?.eras?.find((e) => e.id === worldDate.eraId);
+  const eraAbbr = era?.abbreviation || "";
+  const year = worldDate.year;
+  const monthIndex = worldDate.monthIndex;
+  const day = worldDate.day;
+
+  if (monthIndex == null || monthIndex < 0) {
+    const format = tsConfig?.dateFormats?.year || "YYYY, E";
+    return format
+      .replace(/YYYY/g, String(year))
+      .replace(/\[E\]/g, eraAbbr)
+      .replace(/\bE\b/g, eraAbbr)
+      .trim();
+  }
+
+  const month = tsConfig?.months?.[monthIndex];
+  const monthName = month?.name || "";
+
+  if (day == null || day <= 0) {
+    const format = tsConfig?.dateFormats?.yearMonth || "MMMM YYYY, E";
+    return format
+      .replace(/MMMM/g, monthName)
+      .replace(/YYYY/g, String(year))
+      .replace(/\[E\]/g, eraAbbr)
+      .replace(/\bE\b/g, eraAbbr)
+      .trim();
+  }
+
+  const format = tsConfig?.dateFormats?.yearMonthDay || "D^ MMMM YYYY, E";
+  const ordinal = (n) => {
+    const mod100 = n % 100;
+    if (mod100 >= 11 && mod100 <= 13) return `${n}th`;
+    switch (n % 10) {
+      case 1:
+        return `${n}st`;
+      case 2:
+        return `${n}nd`;
+      case 3:
+        return `${n}rd`;
+      default:
+        return `${n}th`;
+    }
+  };
+
+  return format
+    .replace(/D\^/g, ordinal(day))
+    .replace(/D/g, String(day))
+    .replace(/MMMM/g, monthName)
+    .replace(/YYYY/g, String(year))
+    .replace(/\[E\]/g, eraAbbr)
+    .replace(/\bE\b/g, eraAbbr)
+    .trim();
+}
