@@ -241,10 +241,11 @@ router.post("/sync/campaign/summarize", requireDM, async (req, res) => {
 		let summary = rawText;
 
 		try {
-			const maxTokens = Math.max(
-				4096,
-				Math.min(32768, Math.ceil(rawText.length / 2))
-			);
+			// const maxTokens = Math.max(
+			// 	4096,
+			// 	Math.min(32768, Math.ceil(rawText.length / 2))
+			// );
+			const maxTokens = 64000;
 			const headers = {
 				Authorization: `Bearer ${OWUI_API_KEY}`,
 				"Content-Type": "application/json",
