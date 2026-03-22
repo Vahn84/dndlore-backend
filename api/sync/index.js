@@ -241,17 +241,16 @@ router.post("/sync/campaign/summarize", requireDM, async (req, res) => {
 		let summary = rawText;
 
 		try {
-			const targetWords = 1000;
 			const maxTokens = Math.max(
-				800,
-				Math.min(8000, Math.ceil(targetWords * 3.5)),
+				4096,
+				Math.min(32768, Math.ceil(rawText.length / 2))
 			);
 			const headers = {
 				Authorization: `Bearer ${OWUI_API_KEY}`,
 				"Content-Type": "application/json",
 			};
 
-			console.log("max tokens:", maxTokens);
+			console.log("max tokens:", maxTokens, "rawText length:", rawText.length);
 
 			const timeout = 300000;
 			const controller = new AbortController();
@@ -267,7 +266,7 @@ router.post("/sync/campaign/summarize", requireDM, async (req, res) => {
 						messages: [
 							{
 								role: "user",
-								content: `Elabora un testo narrativo da queste note dell'ultima sessione. Il test deve essere in lingua italiana: ${rawText}`,
+								content: `Elabora un testo narrativo da queste note dell'ultima sessione.\n\n${rawText}`,
 							},
 						],
 						temperature: 0.3,
@@ -295,6 +294,8 @@ router.post("/sync/campaign/summarize", requireDM, async (req, res) => {
 				console.warn(
 					`Open WebUI response was truncated. Consider increasing max_completion_tokens (current: ${maxTokens})`,
 				);
+			} else if (choice?.usage) {
+				console.log("Completion tokens used:", choice.usage.completion_tokens, "of", maxTokens);
 			}
 
 			if (content) summary = content;
