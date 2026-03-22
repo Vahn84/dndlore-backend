@@ -269,7 +269,7 @@ router.post("/sync/campaign/summarize", requireDM, async (req, res) => {
 								content: `Rispettando tutte le indicazioni del system prompt elabora un testo narrativo da queste note dell'ultima sessione.\n\n${rawText}`,
 							},
 						],
-						files: [{type: 'collection', id: process.env.OWUI_KNOWLEDGE_ID}]
+						files: [{type: 'collection', id: process.env.OWUI_KNOWLEDGE_ID}],
 						temperature: 0.5,
 						max_completion_tokens: maxTokens,
 					}),
