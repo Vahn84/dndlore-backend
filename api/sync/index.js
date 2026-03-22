@@ -266,10 +266,11 @@ router.post("/sync/campaign/summarize", requireDM, async (req, res) => {
 						messages: [
 							{
 								role: "user",
-								content: `Elabora un testo narrativo da queste note dell'ultima sessione.\n\n${rawText}`,
+								content: `Rispettando tutte le indicazioni del system prompt elabora un testo narrativo da queste note dell'ultima sessione.\n\n${rawText}`,
 							},
 						],
-						temperature: 0.3,
+						files: [{type: 'collection', id: process.env.OWUI_KNOWLEDGE_ID}]
+						temperature: 0.5,
 						max_completion_tokens: maxTokens,
 					}),
 				},
