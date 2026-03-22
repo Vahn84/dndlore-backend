@@ -110,6 +110,7 @@ jobs:
               -e OWUI_MODEL='${{ secrets.OWUI_MODEL }}' \
               -e LIGHTRAG_API_KEY='${{ secrets.LIGHTRAG_API_KEY }}' \
               -e LIGHTRAG_ENDPOINT='${{ secrets.LIGHTRAG_ENDPOINT }}' \
+              -e OWUI_KNOWLEDGE_ID='${{ secrets.OWUI_KNOWLEDGE_ID }}' \
               -v "$DEPLOY_DIR/uploads":/app/uploads \
               ghcr.io/${{ env.OWNER_LC }}/dndlore-backend:latest
 
