@@ -4,6 +4,7 @@ import { formatEventDate } from "../../utils/time.js";
 import { Page, User, Group, Event, TimeSystem } from "../../models.js";
 import { refreshGoogleToken } from "../auth/index.js";
 import { fetchTimeout } from "../../utils/fetch.js";
+import { markdownToTipTap } from "../../utils/markdown.js";
 
 //SYNC
 const router = express.Router();
@@ -333,28 +334,12 @@ router.post("/sync/campaign/create", requireDM, async (req, res) => {
 				.json({ error: "summary and sessionDate are required" });
 		}
 
-		// Split summary into paragraphs for TipTap format
-		const paragraphs = String(summary)
-			.replace(/\r\n/g, "\n")
-			.split(/\n{2,}/)
-			.map((p) => p.trim())
-			.filter(Boolean);
+		// Convert Markdown from LLM to TipTap format
+		const tiptap = markdownToTipTap(String(summary));
 
-		const tiptap = {
-			type: "doc",
-			content:
-				paragraphs.length > 0
-					? paragraphs.map((p) => ({
-							type: "paragraph",
-							content: [{ type: "text", text: p }],
-						}))
-					: [
-							{
-								type: "paragraph",
-								content: [{ type: "text", text: summary }],
-							},
-						],
-		};
+		if (!tiptap) {
+			return res.status(400).json({ error: "Failed to convert summary to TipTap format" });
+		}
 
 		const page = await Page.create({
 			title: title || "Untitled Session",

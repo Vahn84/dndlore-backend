@@ -1,5 +1,169 @@
 import { formatWorldDate } from "./time.js";
 
+export function markdownToTipTap(markdownText) {
+  if (!markdownText || typeof markdownText !== 'string') {
+    return null;
+  }
+
+  const lines = markdownText.split('\n');
+  const content = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Code blocks
+    if (line.startsWith('```')) {
+      const codeLang = line.slice(3).trim();
+      const codeLines = [];
+      i++;
+      while (i < lines.length && !lines[i].startsWith('```')) {
+        codeLines.push(lines[i]);
+        i++;
+      }
+      content.push({
+        type: 'codeBlock',
+        attrs: { language: codeLang || null },
+        text: codeLines.join('\n')
+      });
+      i++;
+      continue;
+    }
+
+    // Headings
+    const headingMatch = line.match(/^(#{1,6})\s+(.*)$/);
+    if (headingMatch) {
+      content.push({
+        type: 'heading',
+        attrs: { level: headingMatch[1].length },
+        content: [{ type: 'text', text: headingMatch[2], marks: parseInlineMarks(headingMatch[2]) }]
+      });
+      i++;
+      continue;
+    }
+
+    // Blockquotes
+    if (line.startsWith('>')) {
+      const quoteLines = [];
+      while (i < lines.length && lines[i].startsWith('>')) {
+        quoteLines.push(lines[i].replace(/^>\s?/, ''));
+        i++;
+      }
+      content.push({
+        type: 'blockquote',
+        content: [{
+          type: 'paragraph',
+          content: [{ type: 'text', text: quoteLines.join('\n'), marks: parseInlineMarks(quoteLines.join('\n')) }]
+        }]
+      });
+      continue;
+    }
+
+    // Horizontal rule
+    if (line.match(/^[-*_]{3,}$/)) {
+      content.push({ type: 'hr' });
+      i++;
+      continue;
+    }
+
+    // Bullet lists
+    if (line.match(/^[\-\*]\s+/)) {
+      const listItems = [];
+      while (i < lines.length && lines[i].match(/^[\-\*]\s+/)) {
+        const itemText = lines[i].replace(/^[\-\*]\s+/, '');
+        listItems.push({
+          type: 'listItem',
+          content: [{
+            type: 'paragraph',
+            content: [{ type: 'text', text: itemText, marks: parseInlineMarks(itemText) }]
+          }]
+        });
+        i++;
+      }
+      content.push({
+        type: 'bulletList',
+        content: listItems
+      });
+      continue;
+    }
+
+    // Ordered lists
+    if (line.match(/^\d+\.\s+/)) {
+      const listItems = [];
+      while (i < lines.length && lines[i].match(/^\d+\.\s+/)) {
+        const itemText = lines[i].replace(/^\d+\.\s+/, '');
+        listItems.push({
+          type: 'listItem',
+          content: [{
+            type: 'paragraph',
+            content: [{ type: 'text', text: itemText, marks: parseInlineMarks(itemText) }]
+          }]
+        });
+        i++;
+      }
+      content.push({
+        type: 'orderedList',
+        content: listItems
+      });
+      continue;
+    }
+
+    // Regular paragraphs
+    if (line.trim()) {
+      content.push({
+        type: 'paragraph',
+        content: [{ type: 'text', text: line, marks: parseInlineMarks(line) }]
+      });
+    }
+    i++;
+  }
+
+  return content.length > 0 ? { type: 'doc', content } : null;
+}
+
+function parseInlineMarks(text) {
+  const marks = [];
+  
+  // Bold: **text**
+  text.replace(/\*\*([^*]+)\*\*/g, (match, captured) => {
+    marks.push({ type: 'bold' });
+    return match;
+  });
+
+  // Italic: *text* or _text_
+  text.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, (match, captured) => {
+    if (!marks.some(m => m.type === 'bold' && match.includes('**'))) {
+      marks.push({ type: 'italic' });
+    }
+    return match;
+  });
+
+  text.replace(/_([^_]+)_/g, (match, captured) => {
+    marks.push({ type: 'italic' });
+    return match;
+  });
+
+  // Strike: ~~text~~
+  text.replace(/~~([^~]+)~~/g, (match, captured) => {
+    marks.push({ type: 'strike' });
+    return match;
+  });
+
+  // Code: `text`
+  text.replace(/`([^`]+)`/g, (match, captured) => {
+    marks.push({ type: 'code' });
+    return match;
+  });
+
+  // Links: [text](url)
+  text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, capturedText, url) => {
+    marks.push({ type: 'link', attrs: { href: url } });
+    return match;
+  });
+
+  return marks.length > 0 ? marks : null;
+}
+
 export function tipTapToMarkdown(tipTapObj) {
   if (!tipTapObj || tipTapObj.type !== "doc") {
     return "";
@@ -78,22 +242,22 @@ function marksToMarkdown(nodes) {
   return nodes.map((node) => {
     if (node.type === "text") {
       let text = node.text || "";
-      
+
       if (node.marks && Array.isArray(node.marks)) {
         const sortedMarks = sortMarksByDepth(node.marks);
         const openMarks = sortedMarks.map(mark => getMarkTag(mark, true));
         const closeMarks = sortedMarks.reverse().map(mark => getMarkTag(mark, false));
-        
+
         text = openMarks.join("") + text + closeMarks.join("");
       }
-      
+
       return text;
     }
-    
+
     if (node.content && Array.isArray(node.content)) {
       return marksToMarkdown(node.content);
     }
-    
+
     return "";
   }).join("");
 }
@@ -117,7 +281,7 @@ function getMarkDepth(mark) {
 
 function getMarkTag(mark, isOpen) {
   if (!mark) return "";
-  
+
   switch (mark.type) {
     case "bold":
       return isOpen ? "**" : "**";
@@ -157,21 +321,21 @@ export function generateFilename(page, tsConfig) {
         return `campaign - ${sessionDate}: ${title}.md`;
       }
       return `campaign: ${title}.md`;
-    
+
     case "history":
       if (worldDate && worldDate.eraId) {
         const datePart = formatWorldDate(worldDate, tsConfig);
         return `history - ${datePart}: ${title}.md`;
       }
       return `history: ${title}.md`;
-    
+
     case "place":
     case "myth":
     case "people":
-      return `${type}: ${title}.md`;
-    
+      return `${type} - ${title}.md`;
+
     default:
-      return `${type}: ${title}.md`;
+      return `${type} - ${title}.md`;
   }
 }
 
