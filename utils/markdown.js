@@ -36,7 +36,7 @@ export function markdownToTipTap(markdownText) {
       content.push({
         type: 'heading',
         attrs: { level: headingMatch[1].length },
-        content: [{ type: 'text', text: headingMatch[2], marks: parseInlineMarks(headingMatch[2]) }]
+        content: parseInlineContent(headingMatch[2]),
       });
       i++;
       continue;
@@ -53,7 +53,7 @@ export function markdownToTipTap(markdownText) {
         type: 'blockquote',
         content: [{
           type: 'paragraph',
-          content: [{ type: 'text', text: quoteLines.join('\n'), marks: parseInlineMarks(quoteLines.join('\n')) }]
+          content: parseInlineContent(quoteLines.join('\n')),
         }]
       });
       continue;
@@ -75,7 +75,7 @@ export function markdownToTipTap(markdownText) {
           type: 'listItem',
           content: [{
             type: 'paragraph',
-            content: [{ type: 'text', text: itemText, marks: parseInlineMarks(itemText) }]
+            content: parseInlineContent(itemText),
           }]
         });
         i++;
@@ -96,7 +96,7 @@ export function markdownToTipTap(markdownText) {
           type: 'listItem',
           content: [{
             type: 'paragraph',
-            content: [{ type: 'text', text: itemText, marks: parseInlineMarks(itemText) }]
+            content: parseInlineContent(itemText),
           }]
         });
         i++;
@@ -112,7 +112,7 @@ export function markdownToTipTap(markdownText) {
     if (line.trim()) {
       content.push({
         type: 'paragraph',
-        content: [{ type: 'text', text: line, marks: parseInlineMarks(line) }]
+        content: parseInlineContent(line),
       });
     }
     i++;
@@ -121,47 +121,70 @@ export function markdownToTipTap(markdownText) {
   return content.length > 0 ? { type: 'doc', content } : null;
 }
 
-function parseInlineMarks(text) {
-  const marks = [];
-  
-  // Bold: **text**
-  text.replace(/\*\*([^*]+)\*\*/g, (match, captured) => {
-    marks.push({ type: 'bold' });
-    return match;
-  });
+/**
+ * Parse inline markdown into an array of TipTap content nodes.
+ * Each bold/italic span becomes its own text node with the appropriate mark.
+ */
+function parseInlineContent(text) {
+  if (!text) return [{ type: 'text', text: '' }];
 
-  // Italic: *text* or _text_
-  text.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, (match, captured) => {
-    if (!marks.some(m => m.type === 'bold' && match.includes('**'))) {
-      marks.push({ type: 'italic' });
+  const nodes = [];
+  let remaining = text;
+
+  while (remaining.length > 0) {
+    // Bold: **text**
+    const boldMatch = remaining.match(/^\*\*(.+?)\*\*/s);
+    if (boldMatch) {
+      nodes.push({ type: 'text', text: boldMatch[1], marks: [{ type: 'bold' }] });
+      remaining = remaining.slice(boldMatch[0].length);
+      continue;
     }
-    return match;
-  });
 
-  text.replace(/_([^_]+)_/g, (match, captured) => {
-    marks.push({ type: 'italic' });
-    return match;
-  });
+    // Italic: *text*
+    const italicStarMatch = remaining.match(/^\*([^*\n]+?)\*/);
+    if (italicStarMatch) {
+      nodes.push({ type: 'text', text: italicStarMatch[1], marks: [{ type: 'italic' }] });
+      remaining = remaining.slice(italicStarMatch[0].length);
+      continue;
+    }
 
-  // Strike: ~~text~~
-  text.replace(/~~([^~]+)~~/g, (match, captured) => {
-    marks.push({ type: 'strike' });
-    return match;
-  });
+    // Italic: _text_
+    const italicUnderMatch = remaining.match(/^_([^_\n]+?)_/);
+    if (italicUnderMatch) {
+      nodes.push({ type: 'text', text: italicUnderMatch[1], marks: [{ type: 'italic' }] });
+      remaining = remaining.slice(italicUnderMatch[0].length);
+      continue;
+    }
 
-  // Code: `text`
-  text.replace(/`([^`]+)`/g, (match, captured) => {
-    marks.push({ type: 'code' });
-    return match;
-  });
+    // Strike: ~~text~~
+    const strikeMatch = remaining.match(/^~~(.+?)~~/s);
+    if (strikeMatch) {
+      nodes.push({ type: 'text', text: strikeMatch[1], marks: [{ type: 'strike' }] });
+      remaining = remaining.slice(strikeMatch[0].length);
+      continue;
+    }
 
-  // Links: [text](url)
-  text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, capturedText, url) => {
-    marks.push({ type: 'link', attrs: { href: url } });
-    return match;
-  });
+    // Link: [text](url)
+    const linkMatch = remaining.match(/^\[([^\]]+)\]\(([^)]+)\)/);
+    if (linkMatch) {
+      nodes.push({ type: 'text', text: linkMatch[1], marks: [{ type: 'link', attrs: { href: linkMatch[2] } }] });
+      remaining = remaining.slice(linkMatch[0].length);
+      continue;
+    }
 
-  return marks.length > 0 ? marks : null;
+    // Plain text: consume until the next marker
+    const plainMatch = remaining.match(/^([\s\S]+?)(?=\*\*|\*|_(?=[^_])|~~|\[)|^([\s\S]+)$/);
+    if (plainMatch) {
+      const plain = plainMatch[1] ?? plainMatch[2];
+      nodes.push({ type: 'text', text: plain });
+      remaining = remaining.slice(plain.length);
+    } else {
+      nodes.push({ type: 'text', text: remaining[0] });
+      remaining = remaining.slice(1);
+    }
+  }
+
+  return nodes.length > 0 ? nodes : [{ type: 'text', text: text }];
 }
 
 export function tipTapToMarkdown(tipTapObj) {

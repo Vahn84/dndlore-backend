@@ -1,10 +1,10 @@
 import express from "express";
 import { requireDM } from "../../middleware/auth.js";
 import { formatEventDate } from "../../utils/time.js";
-import { Page, User, Group, Event, TimeSystem } from "../../models.js";
+import { Page, User, Group, Event, TimeSystem, AppSettings } from "../../models.js";
 import { refreshGoogleToken } from "../auth/index.js";
-import { fetchTimeout } from "../../utils/fetch.js";
 import { markdownToTipTap } from "../../utils/markdown.js";
+import { generateNarrative } from "../../utils/llm.js";
 
 //SYNC
 const router = express.Router();
@@ -218,7 +218,7 @@ router.post("/sync/campaign/preview", requireDM, async (req, res) => {
 });
 
 // -----------------------------------------------------------------------------
-// Sync Step 1.5: Summarize - Summarize selected date content with OpenAI
+// Sync Step 1.5: Summarize - Generate narrative from session notes via LightRAG + LM Studio
 // -----------------------------------------------------------------------------
 router.post("/sync/campaign/summarize", requireDM, async (req, res) => {
 	try {
@@ -228,95 +228,23 @@ router.post("/sync/campaign/summarize", requireDM, async (req, res) => {
 			return res.status(400).json({ error: "rawText is required" });
 		}
 
-		const OWUI_MODEL = process.env.OWUI_MODEL || "google/gemma-3-27b";
-		const OWUI_API_KEY = process.env.OWUI_API_KEY;
-		if (!OWUI_API_KEY) {
-			return res
-				.status(400)
-				.json({ error: "Open WebUI API key (OWUI) not configured" });
-		}
+		let settings = await AppSettings.findOne();
+		if (!settings) settings = await AppSettings.create({});
 
-		const OWUI_ENDPOINT = process.env.OWUI_ENDPOINT || "http://localhost:3000";
+		console.log("[summarize] Generating narrative via LightRAG + LM Studio...");
 
-		console.log("Summarizing session via Open WebUI...");
-		let summary = rawText;
+		const summary = await generateNarrative({ rawText, settings });
+		const summaryRich = markdownToTipTap(summary);
 
-		try {
-			// const maxTokens = Math.max(
-			// 	4096,
-			// 	Math.min(32768, Math.ceil(rawText.length / 2))
-			// );
-			const maxTokens = 64000;
-			const headers = {
-				Authorization: `Bearer ${OWUI_API_KEY}`,
-				"Content-Type": "application/json",
-			};
-
-			console.log("max tokens:", maxTokens, "rawText length:", rawText.length);
-
-			const timeout = 300000;
-			const controller = new AbortController();
-			const resp = await fetchTimeout(
-				`${OWUI_ENDPOINT}/chat/completions`,
-				timeout,
-				{
-					signal: controller.signal,
-					method: "POST",
-					headers,
-					body: JSON.stringify({
-						model: OWUI_MODEL,
-						messages: [
-							{
-								role: "user",
-								content: `Rispettando tutte le indicazioni del system prompt elabora un testo narrativo da queste note dell'ultima sessione.\n\n${rawText}`,
-							},
-						],
-						files: [{type: 'collection', id: process.env.OWUI_KNOWLEDGE_ID}],
-						temperature: 0.5,
-						max_completion_tokens: maxTokens,
-					}),
-				},
-			);
-			// Check if response is HTML (likely an error page)
-			const contentType = resp.headers.get("content-type") || "";
-			if (contentType.includes("text/html")) {
-				const htmlContent = await resp.text();
-				console.error("Open WebUI returned HTML instead of JSON:", htmlContent);
-				throw new Error(
-					`Open WebUI server returned HTML response. Check if Open WebUI is running at ${OWUI_ENDPOINT}`,
-				);
-			}
-
-			const data = await resp.json();
-			console.log("OWUI Summary:", data);
-			const choice = data?.choices?.[0];
-			const finishReason = choice?.finish_reason;
-			const content = choice?.message?.content?.trim() || choice?.text?.trim();
-
-			if (finishReason === "length") {
-				console.warn(
-					`Open WebUI response was truncated. Consider increasing max_completion_tokens (current: ${maxTokens})`,
-				);
-			} else if (choice?.usage) {
-				console.log("Completion tokens used:", choice.usage.completion_tokens, "of", maxTokens);
-			}
-
-			if (content) summary = content;
-		} catch (e) {
-			console.error("Open WebUI call failed", e);
-			return res.status(500).json({ error: "Open WebUI summarization failed" });
-		}
-
-		// Return the raw or summarized text
-		const resultSummary = summary;
 		res.json({
-			summary: resultSummary,
+			summary,
+			summaryRich,
 			sessionDate,
 			suggestedTitle: sessionDate ? `Session ${sessionDate}` : "Session",
 		});
 	} catch (err) {
-		console.error(err);
-		res.status(500).json({ error: err.message || "Server error" });
+		console.error("[summarize] Failed:", err);
+		res.status(500).json({ error: err.message || "Summarization failed" });
 	}
 });
 
@@ -325,7 +253,7 @@ router.post("/sync/campaign/summarize", requireDM, async (req, res) => {
 // -----------------------------------------------------------------------------
 router.post("/sync/campaign/create", requireDM, async (req, res) => {
 	try {
-		const { summary, sessionDate, title, subtitle, worldDate, bannerUrl } =
+		const { summary, summaryRich, sessionDate, title, subtitle, worldDate, bannerUrl } =
 			req.body || {};
 
 		if (!summary || !sessionDate) {
@@ -334,8 +262,8 @@ router.post("/sync/campaign/create", requireDM, async (req, res) => {
 				.json({ error: "summary and sessionDate are required" });
 		}
 
-		// Convert Markdown from LLM to TipTap format
-		const tiptap = markdownToTipTap(String(summary));
+		// Use pre-converted TipTap JSON from frontend if available, otherwise convert
+		const tiptap = summaryRich ?? markdownToTipTap(String(summary));
 
 		if (!tiptap) {
 			return res.status(400).json({ error: "Failed to convert summary to TipTap format" });

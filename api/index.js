@@ -10,6 +10,7 @@ import pagesRouter from "./pages/index.js";
 import syncRouter from "./sync/index.js";
 import timeSystemRouter from "./time-system/index.js";
 import lightRagRouter from "./lightrag/index.js";
+import settingsRouter from "./settings/index.js";
 // Removed circular import of the Express app – this file now only builds and exports a router.
 
 const router = express.Router();
@@ -25,4 +26,5 @@ router.use(pagesRouter);
 router.use(syncRouter);
 router.use(timeSystemRouter);
 router.use(lightRagRouter);
+router.use(settingsRouter);
 export default router;

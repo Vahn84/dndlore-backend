@@ -105,12 +105,11 @@ jobs:
               -e DISCORD_GUILD_ID='${{ secrets.DISCORD_GUILD_ID }}' \
               -e OPENAI_API_KEY='${{ secrets.OPENAI_API_KEY }}' \
               -e EXTERNAL_API_KEY='${{ secrets.EXTERNAL_API_KEY }}' \
-              -e OWUI_API_KEY='${{ secrets.OWUI_API_KEY }}' \
-              -e OWUI_ENDPOINT='${{ secrets.OWUI_ENDPOINT }}' \
-              -e OWUI_MODEL='${{ secrets.OWUI_MODEL }}' \
               -e LIGHTRAG_API_KEY='${{ secrets.LIGHTRAG_API_KEY }}' \
               -e LIGHTRAG_ENDPOINT='${{ secrets.LIGHTRAG_ENDPOINT }}' \
-              -e OWUI_KNOWLEDGE_ID='${{ secrets.OWUI_KNOWLEDGE_ID }}' \
+              -e LLM_ENDPOINT='${{ secrets.LLM_ENDPOINT }}' \
+              -e LLM_API_KEY='${{ secrets.LLM_API_KEY }}' \
+              -e LLM_MODEL='${{ secrets.LLM_MODEL }}' \
               -v "$DEPLOY_DIR/uploads":/app/uploads \
               ghcr.io/${{ env.OWNER_LC }}/dndlore-backend:latest
 

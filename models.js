@@ -208,3 +208,29 @@ const timeSystemSchema = new mongoose.Schema(
 );
 
 export const TimeSystem = mongoose.model("TimeSystem", timeSystemSchema);
+
+// Singleton document storing DM-configurable runtime settings.
+// Follows the same singleton pattern as TimeSystem.
+const appSettingsSchema = new mongoose.Schema(
+  {
+    systemPrompt: {
+      type: String,
+      default:
+        "Sei il Narratore Supremo della campagna D&D 'Le Cronache di Aetherium'. " +
+        "Usa le informazioni fornite nel CONTESTO per arricchire la narrazione con dettagli coerenti con la lore del mondo. " +
+        "Scrivi in italiano, in terza persona, con tono epico e immersivo. " +
+        "Struttura il testo in paragrafi narrativi. Non inventare dettagli non presenti nelle note o nel contesto.",
+    },
+    temperature: { type: Number, default: 0.5, min: 0, max: 1 },
+    maxTokens: { type: Number, default: 64000 },
+    model: { type: String, default: "" }, // empty = use LLM_MODEL env var
+    lightragMode: {
+      type: String,
+      enum: ["mix", "local", "global"],
+      default: "mix",
+    },
+  },
+  { timestamps: true },
+);
+
+export const AppSettings = mongoose.model("AppSettings", appSettingsSchema);
