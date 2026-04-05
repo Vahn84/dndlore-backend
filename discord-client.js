@@ -344,6 +344,9 @@ class DiscordClient {
       return { id: thread.id, url: thread.url };
     } catch (error) {
       console.error("Failed to create forum post:", error);
+      if (error?.code === 50001) {
+        throw new Error("Bot is missing permissions on the forum channel. Required: CREATE_PUBLIC_THREADS and SEND_MESSAGES_IN_THREADS.");
+      }
       throw error;
     }
   }

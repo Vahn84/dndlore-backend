@@ -96,60 +96,33 @@ router.delete('/assets/:id', requireDM, async (req, res) => {
 
     // Clear references to this asset in Events and Pages
     const assetUrl = asset.url;
-    const assetbannerThumbUrl = asset.thumb_url;
+    const thumbUrl = asset.thumb_url;
 
-    // Update Events that reference this asset's URL or thumbnail
-    await Event.updateMany(
-      {
-        $or: [
-          { bannerUrl: assetUrl },
-          { bannerUrl: assetbannerThumbUrl },
-          { bannerThumbUrl: assetUrl },
-          { bannerThumbUrl: assetbannerThumbUrl },
-        ],
-      },
-      {
-        $set: {
-          bannerUrl: null,
-          bannerThumbUrl: null,
-        },
-      }
-    );
+    // Build a list of non-null URLs belonging to this asset
+    const assetUrls = [assetUrl, thumbUrl].filter(Boolean);
 
-    // Update Pages that reference this asset's URL or thumbnail
-    await Page.updateMany(
-      {
-        $or: [
-          { bannerUrl: assetUrl },
-          { bannerUrl: assetbannerThumbUrl },
-          { bannerThumbUrl: assetUrl },
-          { bannerThumbUrl: assetbannerThumbUrl },
-        ],
-      },
-      {
-        $set: {
-          bannerUrl: null,
-          bannerThumbUrl: null,
-        },
-      }
-    );
+    if (assetUrls.length > 0) {
+      const urlFilter = { $in: assetUrls };
 
-    // Clear references in Page blocks (image blocks with url field)
-    await Page.updateMany(
-      { 'blocks.url': { $in: [assetUrl, assetbannerThumbUrl] } },
-      {
-        $set: {
-          'blocks.$[elem].url': null,
-        },
-      },
-      {
-        arrayFilters: [
-          {
-            'elem.url': { $in: [assetUrl, assetbannerThumbUrl] },
-          },
-        ],
-      }
-    );
+      // Update Events that reference this asset's URL or thumbnail
+      await Event.updateMany(
+        { $or: [{ bannerUrl: urlFilter }, { bannerThumbUrl: urlFilter }] },
+        { $set: { bannerUrl: null, bannerThumbUrl: null } }
+      );
+
+      // Update Pages that reference this asset's URL or thumbnail
+      await Page.updateMany(
+        { $or: [{ bannerUrl: urlFilter }, { bannerThumbUrl: urlFilter }] },
+        { $set: { bannerUrl: null, bannerThumbUrl: null } }
+      );
+
+      // Clear references in Page blocks (image blocks with url field)
+      await Page.updateMany(
+        { 'blocks.url': urlFilter },
+        { $set: { 'blocks.$[elem].url': null } },
+        { arrayFilters: [{ 'elem.url': urlFilter }] }
+      );
+    }
 
     // Attempt to unlink local file if served from /uploads
     if (asset.url && asset.url.startsWith('/uploads/')) {
