@@ -14,7 +14,13 @@ router.post("/pages/:id/lightrag", requireDM, async (req, res) => {
     const page = await Page.findById(id);
     if (!page) return res.status(404).json({ error: "Page not found" });
     const result = await sendToLightRag(page);
-    if (result && result.status === "success") {
+    if (!result) {
+      return res.status(400).json({ error: "Page has no content to sync" });
+    }
+    if (result.status === "error") {
+      return res.status(500).json({ error: result.message || "LightRAG upload failed" });
+    }
+    if (result.status === "success" || result.status === "duplicated") {
       // Update the page with the document name (file_source)
       const update = {};
       update.lightRagDocumentName = result.fileSource;
@@ -31,7 +37,7 @@ router.post("/pages/:id/lightrag", requireDM, async (req, res) => {
 
       res.json(page);
     } else {
-      throw new Error("Failed to save document to LightRag database");
+      return res.status(500).json({ error: "Unexpected LightRAG response status: " + result?.status });
     }
   } catch (error) {
     console.error("Error saving document to LightRag:", error);
@@ -61,21 +67,17 @@ router.delete("/pages/:id/lightrag", requireDM, async (req, res) => {
     }
 
     // Delete from LightRag
-    const deleted = await deleteDocument(page._id.toString());
+    const deleted = await deleteDocument(page.lightRagDocumentName);
 
     if (deleted) {
-      // Clear the document name from the page
       page.lightRagDocumentName = undefined;
       await page.save();
-
-      res.json({
-        success: true,
-        message: "Document deleted from LightRag successfully",
-      });
+      res.json({ success: true, message: "Document deleted from LightRAG successfully" });
     } else {
-      res
-        .status(500)
-        .json({ error: "Failed to delete document from LightRag" });
+      // Document not found in LightRAG — stale reference, clean it up
+      page.lightRagDocumentName = undefined;
+      await page.save();
+      res.json({ success: true, warning: "Document not found in LightRAG — stale reference removed. You can now re-sync the page." });
     }
   } catch (error) {
     console.error("Error deleting document from LightRag:", error);
@@ -148,10 +150,10 @@ router.get("/lightrag/pipeline-status", requireDM, async (req, res) => {
     if (countsRes.ok) {
       const countsData = await countsRes.json();
       const counts = countsData.status_counts ?? {};
-      pending = counts.PENDING ?? 0;
-      inProgress = counts.PROCESSING ?? 0;
-      done = counts.PROCESSED ?? 0;
-      failed = counts.FAILED ?? 0;
+      pending = counts.pending ?? counts.PENDING ?? 0;
+      inProgress = counts.processing ?? counts.PROCESSING ?? 0;
+      done = counts.processed ?? counts.PROCESSED ?? 0;
+      failed = counts.failed ?? counts.FAILED ?? 0;
     }
 
     // status_counts only reflects document intake, not KG pipeline work.
@@ -187,10 +189,12 @@ router.get("/lightrag/failed-documents", requireDM, async (req, res) => {
     }
     const data = await response.json();
 
-    // Handle different response shapes from LightRAG
+    // Handle different response shapes from LightRAG (keys may be lowercase or uppercase)
     let failedDocs = [];
-    if (Array.isArray(data?.statuses?.FAILED)) {
-      failedDocs = data.statuses.FAILED;
+    const statuses = data?.statuses ?? {};
+    const failedBucket = statuses.failed ?? statuses.FAILED;
+    if (Array.isArray(failedBucket)) {
+      failedDocs = failedBucket;
     } else {
       const all = Array.isArray(data?.documents) ? data.documents
         : Array.isArray(data) ? data : [];

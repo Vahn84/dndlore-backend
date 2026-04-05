@@ -113,6 +113,8 @@ const pageSchema = new mongoose.Schema(
     lightRagDocumentName: { type: String },
     // Open WebUI file ID for tracking knowledge base sync status
     owuiFileId: { type: String },
+    // Discord forum thread ID — set once the page has been published as a forum post
+    discordPostId: { type: String },
   },
   { timestamps: true },
 );
@@ -229,6 +231,7 @@ const appSettingsSchema = new mongoose.Schema(
       enum: ["mix", "local", "global"],
       default: "mix",
     },
+    discordForumChannelId: { type: String, default: "" },
   },
   { timestamps: true },
 );

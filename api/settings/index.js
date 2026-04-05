@@ -4,7 +4,7 @@ import { AppSettings } from "../../models.js";
 
 const router = express.Router();
 
-const ALLOWED_FIELDS = ["systemPrompt", "temperature", "maxTokens", "model", "lightragMode"];
+const ALLOWED_FIELDS = ["systemPrompt", "temperature", "maxTokens", "model", "lightragMode", "discordForumChannelId"];
 
 async function getOrCreate() {
   let doc = await AppSettings.findOne();

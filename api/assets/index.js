@@ -5,10 +5,20 @@ import multer from 'multer';
 import sharp from 'sharp';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { UPLOADS_PATH } from '../../utils/uploads.js';
 
 const router = express.Router();
-const upload = multer({ dest: UPLOADS_PATH });
+
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, UPLOADS_PATH),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const base = crypto.randomBytes(16).toString('hex');
+    cb(null, ext ? `${base}${ext}` : base);
+  },
+});
+const upload = multer({ storage });
 
 // -----------------------------------------------------------------------------
 // Asset library (Asset Manager)
@@ -38,15 +48,8 @@ router.post('/assets', requireDM, upload.single('file'), async (req, res) => {
       // Generate thumbnail for uploaded images
       try {
         const ext = path.extname(req.file.filename).toLowerCase();
-        const isImage = [
-          '.jpg',
-          '.jpeg',
-          '.png',
-          '.webp',
-          '.gif',
-          '.bmp',
-          '.tiff',
-        ].includes(ext);
+        const isImage = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff'].includes(ext)
+          || (req.file.mimetype || '').startsWith('image/');
 
         if (isImage) {
           const thumbFilename = `thumb-${req.file.filename}`;

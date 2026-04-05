@@ -306,6 +306,49 @@ class DiscordClient {
   }
 
   /**
+   * Publish a page as a new forum post (thread) in a forum channel.
+   * Handles the 2000-char Discord message limit by splitting into multiple messages.
+   * Sends the banner image as an embed in the first message if provided.
+   * @param {string} channelId - ID of the GUILD_FORUM channel
+   * @param {{ title: string, content: string, bannerUrl?: string }} opts
+   * @returns {Promise<{ id: string, url: string }>}
+   */
+  async createForumPost(channelId, { title, content, bannerUrl }) {
+    const LIMIT = 2000;
+
+    try {
+      const channel = await this.client.channels.fetch(channelId);
+      if (!channel || channel.type !== 15) {
+        throw new Error("Channel not found or not a forum channel");
+      }
+
+      // Split content into ≤2000-char chunks on paragraph boundaries
+      const chunks = splitIntoChunks(content, LIMIT);
+      const firstChunk = chunks[0] || title;
+
+      const firstMessage = { content: firstChunk };
+      if (bannerUrl) {
+        firstMessage.embeds = [{ image: { url: bannerUrl } }];
+      }
+
+      const thread = await channel.threads.create({
+        name: title,
+        message: firstMessage,
+      });
+
+      // Post remaining chunks as follow-up messages in the thread
+      for (let i = 1; i < chunks.length; i++) {
+        await thread.send(chunks[i]);
+      }
+
+      return { id: thread.id, url: thread.url };
+    } catch (error) {
+      console.error("Failed to create forum post:", error);
+      throw error;
+    }
+  }
+
+  /**
    * Fetch user information by ID
    * @param {string} userId - The ID of the user
    * @returns {Promise<{id: string, username: string, discriminator: string, avatar?: string}>}
@@ -491,6 +534,36 @@ class DiscordClient {
   isAvailable() {
     return this.ready && !!this.client;
   }
+}
+
+/**
+ * Split text into chunks of at most `limit` chars, preferring paragraph breaks.
+ */
+function splitIntoChunks(text, limit) {
+  if (text.length <= limit) return [text];
+
+  const chunks = [];
+  let remaining = text;
+
+  while (remaining.length > 0) {
+    if (remaining.length <= limit) {
+      chunks.push(remaining);
+      break;
+    }
+
+    // Try to split on a double newline (paragraph boundary) within the limit
+    const window = remaining.slice(0, limit);
+    const lastPara = window.lastIndexOf("\n\n");
+    const lastNewline = window.lastIndexOf("\n");
+    const splitAt = lastPara > 0 ? lastPara + 2
+      : lastNewline > 0 ? lastNewline + 1
+      : limit;
+
+    chunks.push(remaining.slice(0, splitAt).trimEnd());
+    remaining = remaining.slice(splitAt).trimStart();
+  }
+
+  return chunks.filter(Boolean);
 }
 
 // Export singleton instance

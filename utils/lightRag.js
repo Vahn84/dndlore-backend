@@ -1,10 +1,7 @@
 import { TimeSystem } from "../models.js";
 import { formatEventDate } from "../utils/time.js";
 
-const LIGHTRAG_ENDPOINT =
-	process.env.NODE_ENV === "development"
-		? process.env.LIGHTRAG_ENDPOINT
-		: `${process.env.FRONTEND_ORIGIN}/lightrag`;
+const LIGHTRAG_ENDPOINT = process.env.LIGHTRAG_ENDPOINT;
 const LIGHTRAG_API_KEY = process.env.LIGHTRAG_API_KEY;
 
 export const sendToLightRag = async (page) => {

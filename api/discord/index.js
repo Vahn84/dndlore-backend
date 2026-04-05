@@ -1,10 +1,12 @@
 import express from "express";
 import { requireDM } from "../../middleware/auth.js";
-import { User } from "../../models.js";
+import { User, Page, AppSettings, TimeSystem } from "../../models.js";
 import discordClient, {
   initializeDiscordClient,
 } from "../../discord-client.js";
 import { refreshGoogleToken } from "../auth/index.js";
+import { tipTapToMarkdown } from "../../utils/markdown.js";
+import { formatEventDate } from "../../utils/time.js";
 
 // -----------------------------------------------------------------------------
 // Discord Integration
@@ -473,6 +475,70 @@ router.post("/integrations/discord/events", requireDM, checkDiscordClient(), asy
       error: "Failed to create Discord event",
       details: err.message,
     });
+  }
+});
+
+/**
+ * POST /pages/:id/discord-publish
+ * Publish a lore page as a new post in the configured Discord forum channel.
+ * Stores the resulting thread ID in page.discordPostId.
+ */
+router.post("/pages/:id/discord-publish", requireDM, checkDiscordClient(), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const page = await Page.findById(id);
+    if (!page) return res.status(404).json({ error: "Page not found" });
+
+    const settings = await AppSettings.findOne();
+    const channelId = settings?.discordForumChannelId;
+    if (!channelId) {
+      return res.status(400).json({ error: "Discord forum channel not configured in DM Settings" });
+    }
+
+    // --- Build header ---
+    const headerLines = [];
+    if (page.subtitle) headerLines.push(`*${page.subtitle}*`);
+
+    // World date
+    const ts = await TimeSystem.findOne();
+    const tsConfig = ts?.config || null;
+    if (tsConfig && page.worldDate?.eraId) {
+      const wd = page.worldDate;
+      let dateStr = formatEventDate(tsConfig, wd.eraId, wd.year, wd.monthIndex, wd.day);
+      if (wd.hour != null) {
+        const min = !wd.minute || wd.minute === 0 ? "00" : wd.minute;
+        dateStr += ` ore ${wd.hour}:${min}`;
+      }
+      headerLines.push(`📅 ${dateStr}`);
+    }
+
+    if (headerLines.length > 0) headerLines.push(""); // blank line before body
+
+    // --- Build body from blocks ---
+    const bodyParts = (page.blocks || []).map((b) => {
+      if (b.type === "rich" && b.rich) return tipTapToMarkdown(b.rich);
+      if (b.type === "image" && b.url) return `[🖼 View image](${b.url})`;
+      return null;
+    }).filter(Boolean);
+
+    const fullText = [...headerLines, ...bodyParts].join("\n\n") || page.title;
+
+    // --- Banner image URL ---
+    const bannerUrl = page.bannerUrl || null;
+
+    const { id: threadId, url } = await discordClient.createForumPost(channelId, {
+      title: page.title,
+      content: fullText,
+      bannerUrl,
+    });
+
+    page.discordPostId = threadId;
+    await page.save();
+
+    res.json({ discordPostId: threadId, url });
+  } catch (err) {
+    console.error("POST /pages/:id/discord-publish failed:", err);
+    res.status(500).json({ error: err.message || "Failed to publish to Discord" });
   }
 });
 
