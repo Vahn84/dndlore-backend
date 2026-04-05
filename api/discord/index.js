@@ -515,16 +515,19 @@ router.post("/pages/:id/discord-publish", requireDM, checkDiscordClient(), async
     if (headerLines.length > 0) headerLines.push(""); // blank line before body
 
     // --- Build body from blocks ---
+    const origin = process.env.FRONTEND_ORIGIN?.replace(/\/$/, '') ?? '';
+    const toAbsolute = (url) => (url?.startsWith('/') && origin) ? `${origin}${url}` : url;
+
     const bodyParts = (page.blocks || []).map((b) => {
       if (b.type === "rich" && b.rich) return tipTapToMarkdown(b.rich);
-      if (b.type === "image" && b.url) return `[🖼 View image](${b.url})`;
+      if (b.type === "image" && b.url) return `[🖼 View image](${toAbsolute(b.url)})`;
       return null;
     }).filter(Boolean);
 
     const fullText = [...headerLines, ...bodyParts].join("\n\n") || page.title;
 
-    // --- Banner image URL ---
-    const bannerUrl = page.bannerUrl || null;
+    // --- Banner image URL (must be absolute for Discord embeds) ---
+    const bannerUrl = page.bannerUrl ? toAbsolute(page.bannerUrl) : null;
 
     const { id: threadId, url } = await discordClient.createForumPost(channelId, {
       title: page.title,
