@@ -214,6 +214,12 @@ router.put("/pages/:id", requireDM, async (req, res) => {
         );
       }
 
+      // If linkSync was never explicitly set, default to true for linked events
+      if (ev.linkSync === undefined || ev.linkSync === null) {
+        ev.linkSync = true;
+        changed = true;
+      }
+
       // Only sync other fields if linkSync is enabled
       if (!ev.linkSync) {
         // Still save if we changed hidden status

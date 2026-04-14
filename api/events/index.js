@@ -50,17 +50,36 @@ router.post("/events", requireDM, async (req, res) => {
     return res
       .status(400)
       .json({ error: "title, startDate and groupId are required" });
+  // Default linkSync to true when linking to a page
+  const linkSync = req.body.linkSync !== undefined ? req.body.linkSync : !!pageId;
+
   const last = await Event.findOne().sort({ order: -1 });
   const order = last ? last.order + 1 : 0;
+
+  // If linking with sync, hydrate fields from the page
+  let syncedBannerUrl = bannerUrl;
+  let syncedBannerThumbUrl;
+  let syncedTitle = title;
+  if (pageId && linkSync) {
+    const page = await Page.findById(pageId);
+    if (page) {
+      if (page.title) syncedTitle = page.title;
+      syncedBannerUrl = page.bannerUrl || syncedBannerUrl || "";
+      syncedBannerThumbUrl = page.bannerThumbUrl || "";
+    }
+  }
+
   const event = await Event.create({
-    title,
+    title: syncedTitle,
     type,
     startDate,
     endDate,
-    bannerUrl,
+    bannerUrl: syncedBannerUrl,
+    bannerThumbUrl: syncedBannerThumbUrl,
     detailLevel,
     groupId,
     pageId,
+    linkSync,
     hidden,
     order,
     color,
