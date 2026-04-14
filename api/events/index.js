@@ -185,4 +185,37 @@ router.delete("/events/:id", requireDM, async (req, res) => {
   res.json({ success: true });
 });
 
+// One-time migration: enable linkSync and hydrate banner/title for all linked events
+router.post("/events/migrate-link-sync", requireDM, async (req, res) => {
+  const events = await Event.find({
+    pageId: { $ne: null },
+    $or: [{ linkSync: false }, { linkSync: { $exists: false } }],
+  });
+
+  let updated = 0;
+  const errors = [];
+
+  for (const ev of events) {
+    try {
+      const page = await Page.findById(ev.pageId);
+      if (!page) continue;
+
+      ev.linkSync = true;
+      if (page.title) ev.title = page.title;
+      ev.bannerUrl = page.bannerUrl || "";
+      ev.bannerThumbUrl = page.bannerThumbUrl || "";
+      await ev.save();
+      updated++;
+    } catch (e) {
+      errors.push({ eventId: ev._id, error: e.message });
+    }
+  }
+
+  res.json({
+    found: events.length,
+    updated,
+    errors: errors.length ? errors : undefined,
+  });
+});
+
 export default router;
