@@ -40,7 +40,7 @@ export async function generateNarrative({ rawText, settings }) {
 
   const response = await fetchTimeout(
     `${GATEWAY_ENDPOINT}/chat/completions`,
-    300000,
+    600000,
     {
       method: "POST",
       headers,
@@ -49,6 +49,7 @@ export async function generateNarrative({ rawText, settings }) {
         messages,
         temperature: settings.temperature ?? 0.5,
         max_tokens: settings.maxTokens ?? 64000,
+        synthesis_mode: "compact",  // session notes are primary input; lore context is supplementary
       }),
     }
   );
