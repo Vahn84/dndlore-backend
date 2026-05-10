@@ -338,9 +338,15 @@ router.post("/sync/campaign/summarize/stream", requireDM, async (req, res) => {
 					// Synthesize a final `summary` event so the frontend can populate
 					// the editor in one shot without re-rendering deltas.
 					const md = (payload.content || fullContent || "").trim();
+					console.log(
+						`[summarize/stream] done — payload.content=${
+							payload.content?.length ?? 0
+						}c fullContent=${fullContent.length}c final=${md.length}c`
+					);
+					const tt = markdownToTipTap(md);
 					write("summary", {
 						summary: md,
-						summaryRich: markdownToTipTap(md),
+						summaryRich: tt,
 						sessionDate,
 						audience: audienceMode,
 						suggestedTitle: sessionDate ? `Session ${sessionDate}` : "Session",
