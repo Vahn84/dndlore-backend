@@ -4,7 +4,7 @@ import { formatEventDate } from "../../utils/time.js";
 import { Page, User, Group, Event, TimeSystem, AppSettings } from "../../models.js";
 import { refreshGoogleToken } from "../auth/index.js";
 import { markdownToTipTap } from "../../utils/markdown.js";
-import { generateNarrative } from "../../utils/llm.js";
+import { generateNarrative, streamNarrative } from "../../utils/llm.js";
 
 //SYNC
 const router = express.Router();
@@ -250,6 +250,110 @@ router.post("/sync/campaign/summarize", requireDM, async (req, res) => {
 	} catch (err) {
 		console.error("[summarize] Failed:", err);
 		res.status(500).json({ error: err.message || "Summarization failed" });
+	}
+});
+
+// -----------------------------------------------------------------------------
+// Sync Step 1.6: Streaming Summarize - SSE proxy to wiki-server
+//
+// Same input as /sync/campaign/summarize. Pipes wiki-server's SSE through to
+// the client and emits a synthesized `summary` event at the end with the
+// final markdown + TipTap-rich payload (so the frontend can populate the
+// editor without a separate fetch).
+// -----------------------------------------------------------------------------
+router.post("/sync/campaign/summarize/stream", requireDM, async (req, res) => {
+	const { rawText, sessionDate, audience } = req.body || {};
+
+	if (!rawText) {
+		return res.status(400).json({ error: "rawText is required" });
+	}
+
+	const audienceMode = audience === "dm" ? "dm" : "player";
+
+	let settings = await AppSettings.findOne();
+	if (!settings) settings = await AppSettings.create({});
+
+	console.log(`[summarize/stream] Streaming narrative via wiki-server (audience=${audienceMode})...`);
+
+	res.set({
+		"Content-Type": "text/event-stream",
+		"Cache-Control": "no-cache, no-transform",
+		Connection: "keep-alive",
+		"X-Accel-Buffering": "no",
+	});
+	res.flushHeaders?.();
+
+	const write = (event, data) => {
+		res.write(`event: ${event}\n`);
+		res.write(`data: ${JSON.stringify(data)}\n\n`);
+	};
+
+	let aborted = false;
+	req.on("close", () => { aborted = true; });
+
+	try {
+		const upstream = await streamNarrative({
+			rawText,
+			settings,
+			audience: audienceMode,
+		});
+
+		// Parse SSE from wiki-server, accumulate full content, forward events.
+		const reader = upstream.body.getReader();
+		const decoder = new TextDecoder();
+		let buffer = "";
+		let fullContent = "";
+
+		while (!aborted) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			buffer += decoder.decode(value, { stream: true });
+
+			const events = buffer.split(/\n\n/);
+			buffer = events.pop() ?? "";
+
+			for (const evRaw of events) {
+				const lines = evRaw.split("\n");
+				let eventName = "message";
+				let dataStr = "";
+				for (const line of lines) {
+					if (line.startsWith("event:")) eventName = line.slice(6).trim();
+					else if (line.startsWith("data:")) dataStr += line.slice(5).trim();
+					else if (line.startsWith(":")) {
+						// Comment / heartbeat — forward as-is to keep client connection alive
+						res.write(`${line}\n\n`);
+					}
+				}
+				if (!dataStr) continue;
+
+				let payload;
+				try { payload = JSON.parse(dataStr); } catch { continue; }
+
+				if (eventName === "delta" && payload.text) {
+					fullContent += payload.text;
+				}
+				write(eventName, payload);
+
+				if (eventName === "done") {
+					// Synthesize a final `summary` event so the frontend can populate
+					// the editor in one shot without re-rendering deltas.
+					const md = (payload.content || fullContent || "").trim();
+					write("summary", {
+						summary: md,
+						summaryRich: markdownToTipTap(md),
+						sessionDate,
+						audience: audienceMode,
+						suggestedTitle: sessionDate ? `Session ${sessionDate}` : "Session",
+					});
+				}
+				if (eventName === "error") break;
+			}
+		}
+	} catch (err) {
+		console.error("[summarize/stream] Failed:", err);
+		write("error", { message: err.message || "Streaming failed" });
+	} finally {
+		res.end();
 	}
 });
 

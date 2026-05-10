@@ -95,3 +95,51 @@ export async function generateNarrative({ rawText, settings, audience = "player"
 
   return content;
 }
+
+// Streaming variant. Opens an SSE connection to wiki-server's /elaborate/stream
+// and returns the raw response stream so the caller can pipe it onward.
+// Returns { response, body } where body is a Node ReadableStream of SSE bytes.
+export async function streamNarrative({ rawText, settings, audience = "player" }) {
+  let systemPrompt;
+  let temperature;
+  if (audience === "dm") {
+    systemPrompt = settings.dmSystemPrompt || settings.systemPrompt;
+    temperature = settings.dmTemperature ?? settings.temperature ?? 0.4;
+  } else {
+    systemPrompt = settings.playerSystemPrompt || settings.systemPrompt;
+    temperature = settings.playerTemperature ?? settings.temperature ?? 0.65;
+  }
+  const includeSpoilers = audience === "dm";
+  const task = audience === "dm"
+    ? `Analizza queste note di sessione dal punto di vista del DM.\n\n${systemPrompt}`
+    : `Elabora queste note di sessione in un capitolo narrativo per i giocatori.\n\n${systemPrompt}`;
+
+  const body = {
+    task,
+    notes: rawText,
+    include_spoilers: includeSpoilers,
+    pass2_temperature: temperature,
+    pass2_max_tokens: settings.maxTokens ?? 4096,
+  };
+  if (settings.model) body.model = settings.model;
+
+  const headers = {
+    "Content-Type": "application/json",
+    Accept: "text/event-stream",
+    ...(WIKI_SERVER_KEY ? { Authorization: `Bearer ${WIKI_SERVER_KEY}` } : {}),
+  };
+
+  console.log(
+    `[llm] wiki-server elaborate/stream: audience=${audience} include_spoilers=${includeSpoilers} temperature=${temperature}`
+  );
+
+  const response = await fetch(
+    `${WIKI_SERVER_URL.replace(/\/$/, "")}/elaborate/stream`,
+    { method: "POST", headers, body: JSON.stringify(body) }
+  );
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`wiki-server stream returned HTTP ${response.status}: ${text.slice(0, 400)}`);
+  }
+  return response;
+}
