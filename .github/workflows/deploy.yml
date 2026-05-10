@@ -111,6 +111,8 @@ jobs:
               -e LLM_API_KEY='${{ secrets.LLM_API_KEY }}' \
               -e LLM_MODEL='${{ secrets.LLM_MODEL }}' \
               -e GATEWAY_ENDPOINT='${{ secrets.GATEWAY_ENDPOINT }}' \
+              -e WIKI_SERVER_URL='${{ secrets.WIKI_SERVER_URL }}' \
+              -e WIKI_SERVER_KEY='${{ secrets.WIKI_SERVER_KEY }}' \
               -v "$DEPLOY_DIR/uploads":/app/uploads \
               ghcr.io/${{ env.OWNER_LC }}/dndlore-backend:latest
 
