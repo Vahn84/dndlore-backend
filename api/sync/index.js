@@ -222,24 +222,29 @@ router.post("/sync/campaign/preview", requireDM, async (req, res) => {
 // -----------------------------------------------------------------------------
 router.post("/sync/campaign/summarize", requireDM, async (req, res) => {
 	try {
-		const { rawText, sessionDate } = req.body || {};
+		const { rawText, sessionDate, audience } = req.body || {};
 
 		if (!rawText) {
 			return res.status(400).json({ error: "rawText is required" });
 		}
 
+		// audience: 'player' (default — spoiler-safe, polished narrative) or
+		// 'dm' (structured analysis with full lore access).
+		const audienceMode = audience === "dm" ? "dm" : "player";
+
 		let settings = await AppSettings.findOne();
 		if (!settings) settings = await AppSettings.create({});
 
-		console.log("[summarize] Generating narrative via LightRAG + LM Studio...");
+		console.log(`[summarize] Generating narrative via wiki-server (audience=${audienceMode})...`);
 
-		const summary = await generateNarrative({ rawText, settings });
+		const summary = await generateNarrative({ rawText, settings, audience: audienceMode });
 		const summaryRich = markdownToTipTap(summary);
 
 		res.json({
 			summary,
 			summaryRich,
 			sessionDate,
+			audience: audienceMode,
 			suggestedTitle: sessionDate ? `Session ${sessionDate}` : "Session",
 		});
 	} catch (err) {

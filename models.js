@@ -215,6 +215,9 @@ export const TimeSystem = mongoose.model("TimeSystem", timeSystemSchema);
 // Follows the same singleton pattern as TimeSystem.
 const appSettingsSchema = new mongoose.Schema(
   {
+    // Legacy single prompt — kept for backward compat. Prefer playerSystemPrompt
+    // and dmSystemPrompt below. If the audience-specific prompts are unset,
+    // this is used as a fallback.
     systemPrompt: {
       type: String,
       default:
@@ -223,14 +226,50 @@ const appSettingsSchema = new mongoose.Schema(
         "Scrivi in italiano, in terza persona, con tono epico e immersivo. " +
         "Struttura il testo in paragrafi narrativi. Non inventare dettagli non presenti nelle note o nel contesto.",
     },
+
+    // Audience-specific prompts. The website chooses which to send via the
+    // `audience` field on /sync/campaign/summarize ('player' | 'dm').
+    //
+    // - playerSystemPrompt: spoiler-safe narrative recap, polished prose,
+    //   suitable for publication on Discord / public site. wiki-server is
+    //   called with include_spoilers=false (DM-only pages excluded).
+    // - dmSystemPrompt: structured DM-prep / analysis with full lore access.
+    //   wiki-server is called with include_spoilers=true.
+    playerSystemPrompt: {
+      type: String,
+      default:
+        "Scrivi un capitolo di romanzo fantasy moderno (registro Patrick Rothfuss, NON Tolkien). " +
+        "Stile narrativo evocativo, prosa scorrevole, grammatica perfetta. Evidenzia colpi di scena. " +
+        "Nomi propri di personaggi, luoghi e fazioni in **grassetto**; atmosfera, pensieri ed enfasi narrativa in *corsivo*. " +
+        "Nessuna meta-narrativa, nessun commentario fuori dalla storia. Italiano, terza persona.",
+    },
+    dmSystemPrompt: {
+      type: String,
+      default:
+        "Vista DM. Output strutturato in sezioni: " +
+        "(1) Riassunto degli eventi, (2) Fili narrativi attivati o richiamati, " +
+        "(3) Sospetti / minacce immediate, (4) Suggerimenti per la prossima sessione, " +
+        "(5) Lacune di continuità o contraddizioni rilevate. " +
+        "Tono analitico ma non sterile. Riferimenti a lore segreta consentiti. Italiano.",
+    },
+
+    // Generic generation parameters (fallback when audience-specific values aren't set).
     temperature: { type: Number, default: 0.5, min: 0, max: 1 },
     maxTokens: { type: Number, default: 64000 },
-    model: { type: String, default: "" }, // empty = use LLM_MODEL env var
+
+    // Audience-specific tuning. When set, override the generic temperature.
+    playerTemperature: { type: Number, default: 0.65, min: 0, max: 1 },
+    dmTemperature: { type: Number, default: 0.4, min: 0, max: 1 },
+
+    model: { type: String, default: "" }, // empty = use LLM_MODEL env var on the wiki-server
+
+    // Kept for legacy / dual-rail experiments. Wiki retrieval is the new primary.
     lightragMode: {
       type: String,
       enum: ["mix", "local", "global"],
       default: "mix",
     },
+
     discordForumChannelId: { type: String, default: "" },
   },
   { timestamps: true },
