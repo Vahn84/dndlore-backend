@@ -447,6 +447,7 @@ router.post("/sync/wiki/ingest/dry-run/stream", requireDM, async (req, res) => {
 		const reader = upstream.body.getReader();
 		let chunkCount = 0;
 		let totalBytes = 0;
+		let lastLogged = Date.now();
 
 		while (!aborted) {
 			const { done, value } = await reader.read();
@@ -456,11 +457,15 @@ router.post("/sync/wiki/ingest/dry-run/stream", requireDM, async (req, res) => {
 			}
 			chunkCount++;
 			totalBytes += value.length;
-			// Write the raw Buffer directly — preserve SSE byte framing.
+			// Log periodically without spamming
+			if (Date.now() - lastLogged > 5000 || chunkCount <= 5) {
+				console.log(`[ingest/dry-run/stream] chunk #${chunkCount} ${value.length}b (total ${totalBytes}b) aborted=${aborted}`);
+				lastLogged = Date.now();
+			}
 			res.write(Buffer.from(value));
-			// Hint to flush downstream.
 			if (typeof res.flush === "function") res.flush();
 		}
+		console.log(`[ingest/dry-run/stream] loop exit aborted=${aborted}`);
 	} catch (err) {
 		console.error("[ingest/dry-run/stream] Failed:", err);
 		write("error", { message: err.message || "Streaming failed" });
