@@ -481,6 +481,46 @@ router.post("/sync/wiki/ingest/dry-run/stream", requireDM, async (req, res) => {
 });
 
 // -----------------------------------------------------------------------------
+// Wiki ingest APPLY — DM submits selected approved proposals; wiki-server
+// writes files. Body: { proposals: [{ slug, action, proposed_md }] }
+// -----------------------------------------------------------------------------
+router.post("/sync/wiki/ingest/apply", requireDM, async (req, res) => {
+	const { proposals } = req.body || {};
+	if (!Array.isArray(proposals) || proposals.length === 0) {
+		return res.status(400).json({ error: "proposals[] required" });
+	}
+
+	const WIKI_SERVER_URL =
+		process.env.WIKI_SERVER_URL ||
+		(process.env.GATEWAY_ENDPOINT || "").replace(/\/v1\/?$/, "") ||
+		"";
+	const WIKI_SERVER_KEY =
+		process.env.WIKI_SERVER_KEY || process.env.GATEWAY_API_KEY || "";
+	if (!WIKI_SERVER_URL) {
+		return res.status(500).json({ error: "WIKI_SERVER_URL not configured" });
+	}
+
+	try {
+		const upstream = await fetch(
+			`${WIKI_SERVER_URL.replace(/\/$/, "")}/ingest/apply`,
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					...(WIKI_SERVER_KEY ? { Authorization: `Bearer ${WIKI_SERVER_KEY}` } : {}),
+				},
+				body: JSON.stringify({ proposals }),
+			}
+		);
+		const text = await upstream.text();
+		res.status(upstream.status).type("application/json").send(text);
+	} catch (err) {
+		console.error("[ingest/apply] Failed:", err);
+		res.status(500).json({ error: err.message });
+	}
+});
+
+// -----------------------------------------------------------------------------
 // Sync Step 2: Create - Save the page and event with custom fields
 // -----------------------------------------------------------------------------
 router.post("/sync/campaign/create", requireDM, async (req, res) => {
