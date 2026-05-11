@@ -389,9 +389,23 @@ router.post("/sync/wiki/ingest/dry-run/stream", requireDM, async (req, res) => {
 	});
 	res.flushHeaders?.();
 
+	// Send a comment immediately to defeat any intermediate proxy that times
+	// out a "stalled" upstream within 30s. Pass 1 takes ~30s before its first
+	// real event arrives.
+	res.write(`: connected\n\n`);
+	if (typeof res.flush === "function") res.flush();
+
+	// Local heartbeat every 10s — independent of upstream so we never have
+	// 30s of silence on the wire even if upstream's heartbeat is buffered.
+	const localHeartbeat = setInterval(() => {
+		res.write(`: ping\n\n`);
+		if (typeof res.flush === "function") res.flush();
+	}, 10000);
+
 	const write = (event, data) => {
 		res.write(`event: ${event}\n`);
 		res.write(`data: ${JSON.stringify(data)}\n\n`);
+		if (typeof res.flush === "function") res.flush();
 	};
 
 	let aborted = false;
@@ -451,6 +465,7 @@ router.post("/sync/wiki/ingest/dry-run/stream", requireDM, async (req, res) => {
 		console.error("[ingest/dry-run/stream] Failed:", err);
 		write("error", { message: err.message || "Streaming failed" });
 	} finally {
+		clearInterval(localHeartbeat);
 		res.end();
 	}
 });
