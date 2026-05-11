@@ -408,10 +408,16 @@ router.post("/sync/wiki/ingest/dry-run/stream", requireDM, async (req, res) => {
 		if (typeof res.flush === "function") res.flush();
 	};
 
-	let aborted = false;
-	req.on("close", () => {
-		aborted = true;
-		console.log("[ingest/dry-run/stream] client disconnected");
+	// Track whether the client has truly gone away. `req.on("close")` fires on
+	// normal request-body completion in Express, so it's unreliable. Use the
+	// response stream instead: it closes only when the connection actually
+	// terminates (either we ended it, or the client did).
+	let clientGone = false;
+	res.on("close", () => {
+		if (!res.writableEnded) {
+			clientGone = true;
+			console.log("[ingest/dry-run/stream] client truly disconnected (res closed before end)");
+		}
 	});
 
 	try {
@@ -449,7 +455,7 @@ router.post("/sync/wiki/ingest/dry-run/stream", requireDM, async (req, res) => {
 		let totalBytes = 0;
 		let lastLogged = Date.now();
 
-		while (!aborted) {
+		while (!clientGone) {
 			const { done, value } = await reader.read();
 			if (done) {
 				console.log(`[ingest/dry-run/stream] upstream done chunks=${chunkCount} bytes=${totalBytes}`);
@@ -457,15 +463,14 @@ router.post("/sync/wiki/ingest/dry-run/stream", requireDM, async (req, res) => {
 			}
 			chunkCount++;
 			totalBytes += value.length;
-			// Log periodically without spamming
 			if (Date.now() - lastLogged > 5000 || chunkCount <= 5) {
-				console.log(`[ingest/dry-run/stream] chunk #${chunkCount} ${value.length}b (total ${totalBytes}b) aborted=${aborted}`);
+				console.log(`[ingest/dry-run/stream] chunk #${chunkCount} ${value.length}b (total ${totalBytes}b)`);
 				lastLogged = Date.now();
 			}
 			res.write(Buffer.from(value));
 			if (typeof res.flush === "function") res.flush();
 		}
-		console.log(`[ingest/dry-run/stream] loop exit aborted=${aborted}`);
+		console.log(`[ingest/dry-run/stream] loop exit clientGone=${clientGone}`);
 	} catch (err) {
 		console.error("[ingest/dry-run/stream] Failed:", err);
 		write("error", { message: err.message || "Streaming failed" });
