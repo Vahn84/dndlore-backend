@@ -358,6 +358,91 @@ router.post("/sync/campaign/summarize/stream", requireDM, async (req, res) => {
 });
 
 // -----------------------------------------------------------------------------
+// Wiki ingest dry-run (SSE proxy to wiki-server)
+//
+// Body: { raw_text, source_title, source_date, source_kind }
+// Streams plan/page_start/page_done/done/error events through to client.
+// -----------------------------------------------------------------------------
+router.post("/sync/wiki/ingest/dry-run/stream", requireDM, async (req, res) => {
+	const { rawText, sourceTitle, sourceDate, sourceKind } = req.body || {};
+	if (!rawText) {
+		return res.status(400).json({ error: "rawText is required" });
+	}
+
+	const WIKI_SERVER_URL =
+		process.env.WIKI_SERVER_URL ||
+		(process.env.GATEWAY_ENDPOINT || "").replace(/\/v1\/?$/, "") ||
+		"";
+	const WIKI_SERVER_KEY =
+		process.env.WIKI_SERVER_KEY || process.env.GATEWAY_API_KEY || "";
+	if (!WIKI_SERVER_URL) {
+		return res.status(500).json({ error: "WIKI_SERVER_URL not configured" });
+	}
+
+	res.set({
+		"Content-Type": "text/event-stream",
+		"Cache-Control": "no-cache, no-transform",
+		Connection: "keep-alive",
+		"X-Accel-Buffering": "no",
+	});
+	res.flushHeaders?.();
+
+	const write = (event, data) => {
+		res.write(`event: ${event}\n`);
+		res.write(`data: ${JSON.stringify(data)}\n\n`);
+	};
+
+	let aborted = false;
+	req.on("close", () => { aborted = true; });
+
+	try {
+		const upstream = await fetch(
+			`${WIKI_SERVER_URL.replace(/\/$/, "")}/ingest/dry-run/stream`,
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Accept: "text/event-stream",
+					...(WIKI_SERVER_KEY ? { Authorization: `Bearer ${WIKI_SERVER_KEY}` } : {}),
+				},
+				body: JSON.stringify({
+					raw_text: rawText,
+					source_title: sourceTitle,
+					source_date: sourceDate,
+					source_kind: sourceKind,
+				}),
+			}
+		);
+
+		if (!upstream.ok) {
+			const text = await upstream.text().catch(() => "");
+			write("error", {
+				message: `wiki-server ${upstream.status}: ${text.slice(0, 300)}`,
+			});
+			return res.end();
+		}
+
+		const reader = upstream.body.getReader();
+		const decoder = new TextDecoder();
+		let buffer = "";
+
+		while (!aborted) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			buffer += decoder.decode(value, { stream: true });
+			// Forward raw chunk as-is to preserve SSE framing exactly.
+			res.write(buffer);
+			buffer = "";
+		}
+	} catch (err) {
+		console.error("[ingest/dry-run/stream] Failed:", err);
+		write("error", { message: err.message || "Streaming failed" });
+	} finally {
+		res.end();
+	}
+});
+
+// -----------------------------------------------------------------------------
 // Sync Step 2: Create - Save the page and event with custom fields
 // -----------------------------------------------------------------------------
 router.post("/sync/campaign/create", requireDM, async (req, res) => {
