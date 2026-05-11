@@ -379,6 +379,8 @@ router.post("/sync/wiki/ingest/dry-run/stream", requireDM, async (req, res) => {
 		return res.status(500).json({ error: "WIKI_SERVER_URL not configured" });
 	}
 
+	console.log(`[ingest/dry-run/stream] START upstream=${WIKI_SERVER_URL} rawText=${rawText.length}c title=${sourceTitle}`);
+
 	res.set({
 		"Content-Type": "text/event-stream",
 		"Cache-Control": "no-cache, no-transform",
@@ -393,7 +395,10 @@ router.post("/sync/wiki/ingest/dry-run/stream", requireDM, async (req, res) => {
 	};
 
 	let aborted = false;
-	req.on("close", () => { aborted = true; });
+	req.on("close", () => {
+		aborted = true;
+		console.log("[ingest/dry-run/stream] client disconnected");
+	});
 
 	try {
 		const upstream = await fetch(
@@ -414,8 +419,11 @@ router.post("/sync/wiki/ingest/dry-run/stream", requireDM, async (req, res) => {
 			}
 		);
 
+		console.log(`[ingest/dry-run/stream] upstream status=${upstream.status}`);
+
 		if (!upstream.ok) {
 			const text = await upstream.text().catch(() => "");
+			console.error(`[ingest/dry-run/stream] upstream not ok: ${text.slice(0, 200)}`);
 			write("error", {
 				message: `wiki-server ${upstream.status}: ${text.slice(0, 300)}`,
 			});
@@ -423,16 +431,21 @@ router.post("/sync/wiki/ingest/dry-run/stream", requireDM, async (req, res) => {
 		}
 
 		const reader = upstream.body.getReader();
-		const decoder = new TextDecoder();
-		let buffer = "";
+		let chunkCount = 0;
+		let totalBytes = 0;
 
 		while (!aborted) {
 			const { done, value } = await reader.read();
-			if (done) break;
-			buffer += decoder.decode(value, { stream: true });
-			// Forward raw chunk as-is to preserve SSE framing exactly.
-			res.write(buffer);
-			buffer = "";
+			if (done) {
+				console.log(`[ingest/dry-run/stream] upstream done chunks=${chunkCount} bytes=${totalBytes}`);
+				break;
+			}
+			chunkCount++;
+			totalBytes += value.length;
+			// Write the raw Buffer directly — preserve SSE byte framing.
+			res.write(Buffer.from(value));
+			// Hint to flush downstream.
+			if (typeof res.flush === "function") res.flush();
 		}
 	} catch (err) {
 		console.error("[ingest/dry-run/stream] Failed:", err);
