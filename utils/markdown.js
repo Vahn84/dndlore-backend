@@ -59,9 +59,9 @@ export function markdownToTipTap(markdownText) {
       continue;
     }
 
-    // Horizontal rule
+    // Horizontal rule — TipTap uses 'horizontalRule' as node name (not 'hr')
     if (line.match(/^[-*_]{3,}$/)) {
-      content.push({ type: 'hr' });
+      content.push({ type: 'horizontalRule' });
       i++;
       continue;
     }
