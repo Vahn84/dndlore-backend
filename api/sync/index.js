@@ -485,7 +485,7 @@ router.post("/sync/wiki/ingest/dry-run/stream", requireDM, async (req, res) => {
 // writes files. Body: { proposals: [{ slug, action, proposed_md }] }
 // -----------------------------------------------------------------------------
 router.post("/sync/wiki/ingest/apply", requireDM, async (req, res) => {
-	const { proposals } = req.body || {};
+	const { proposals, pageId } = req.body || {};
 	if (!Array.isArray(proposals) || proposals.length === 0) {
 		return res.status(400).json({ error: "proposals[] required" });
 	}
@@ -513,6 +513,15 @@ router.post("/sync/wiki/ingest/apply", requireDM, async (req, res) => {
 			}
 		);
 		const text = await upstream.text();
+		// On a successful upstream apply, stamp the originating lore page so
+		// the UI can show it has been ingested into the Aetherium wiki.
+		if (upstream.ok && pageId) {
+			try {
+				await Page.findByIdAndUpdate(pageId, { wikiIngested: true });
+			} catch (e) {
+				console.error("[ingest/apply] wikiIngested stamp failed:", e.message);
+			}
+		}
 		res.status(upstream.status).type("application/json").send(text);
 	} catch (err) {
 		console.error("[ingest/apply] Failed:", err);

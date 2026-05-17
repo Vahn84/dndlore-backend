@@ -115,6 +115,9 @@ const pageSchema = new mongoose.Schema(
     owuiFileId: { type: String },
     // Discord forum thread ID — set once the page has been published as a forum post
     discordPostId: { type: String },
+    // True once this page's content has been ingested into the Aetherium wiki
+    // (stamped by /sync/wiki/ingest/apply on a successful upstream apply).
+    wikiIngested: { type: Boolean, default: false },
   },
   { timestamps: true },
 );
